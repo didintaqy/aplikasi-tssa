@@ -1,0 +1,3208 @@
+<script>
+/* ===========================================================
+   REMAJA — logika sisi klien (versi 2)
+   =========================================================== */
+
+var APP = { pengaturan:{}, sesi:{peran:''}, atlet:[], itemTes:[], komponen:[],
+            kategori:[], benchmark:[], pengguna:[],
+            fotoAtlet:null, fotoBukti:null, fotoLogo:null,
+            dashboard:null, riwayatTes:[], prestasiSemua:[] };
+
+var TOKEN = null;
+
+/* ---------- Pembantu ---------- */
+
+/** Panggilan server yang tidak memerlukan sesi (layar masuk). */
+function panggilPublik(fn) {
+  var args = Array.prototype.slice.call(arguments, 1);
+  return new Promise(function (ok, gagal) {
+    google.script.run.withSuccessHandler(ok).withFailureHandler(gagal)[fn].apply(null, args);
+  });
+}
+
+/** Panggilan server biasa — token sesi selalu ikut sebagai argumen pertama. */
+function panggil(fn) {
+  var args = Array.prototype.slice.call(arguments, 1);
+  return panggilPublik.apply(null, [fn, TOKEN].concat(args)).catch(function (e) {
+    if (e && /SESI_HABIS/.test(e.message || '')) {
+      keluarPaksa('Sesi Anda berakhir. Silakan masuk kembali.');
+      throw new Error('Sesi berakhir.');
+    }
+    throw e;
+  });
+}
+
+function el(id) { return document.getElementById(id); }
+
+function pesan(teks, salah) {
+  var p = el('pesan');
+  p.textContent = teks;
+  p.className = salah ? 'salah' : '';
+  p.style.display = 'block';
+  clearTimeout(p._t);
+  p._t = setTimeout(function () { p.style.display = 'none'; }, 4800);
+}
+
+function persen(n, desimal) {
+  if (n === null || n === undefined || isNaN(n)) return '–';
+  return (n * 100).toFixed(desimal === undefined ? 1 : desimal) + '%';
+}
+
+function angka(n) {
+  if (n === null || n === undefined || n === '' || isNaN(n)) return '–';
+  return (Math.round(Number(n) * 100) / 100).toString().replace('.', ',');
+}
+
+function aman(t) {
+  return String(t === null || t === undefined ? '' : t)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function bolehUbah() { return APP.sesi.peran === 'Admin' || APP.sesi.peran === 'Pelatih'; }
+function adalahAdmin() { return APP.sesi.peran === 'Admin'; }
+
+/** Ubah berkas pilihan pengguna menjadi base64 untuk dikirim ke server. */
+function bacaBerkas(input) {
+  return new Promise(function (ok, gagal) {
+    var f = input.files && input.files[0];
+    if (!f) return ok(null);
+    if (f.size > 5 * 1024 * 1024) return gagal(new Error('Ukuran berkas melebihi 5 MB.'));
+    var r = new FileReader();
+    r.onload = function () {
+      ok({ data: r.result.split(',')[1], mimeType: f.type, nama: f.name });
+    };
+    r.onerror = function () { gagal(new Error('Berkas gagal dibaca.')); };
+    r.readAsDataURL(f);
+  });
+}
+
+function hitungUsiaKlien(tgl) {
+  if (!tgl) return null;
+  var l = new Date(tgl), k = new Date();
+  var u = k.getFullYear() - l.getFullYear();
+  var m = k.getMonth() - l.getMonth();
+  if (m < 0 || (m === 0 && k.getDate() < l.getDate())) u--;
+  return u;
+}
+
+function komponenAktif() {
+  return APP.komponen.filter(function (k) { return k.aktif !== 'TIDAK'; });
+}
+
+function itemAktif() {
+  return APP.itemTes.filter(function (t) { return t.aktif !== 'TIDAK'; });
+}
+
+var WARNA_DASAR = ['#A81D26', '#1D6FA8', '#D9A31B', '#27924F', '#6B3FA0', '#B5651D', '#0E7C7B'];
+function warnaKomponen(i) {
+  return i < WARNA_DASAR.length ? WARNA_DASAR[i] : 'hsl(' + ((i * 67) % 360) + ',55%,42%)';
+}
+
+/* ===========================================================
+   MASUK / KELUAR
+   =========================================================== */
+
+document.addEventListener('DOMContentLoaded', function () {
+  panggilPublik('getIdentitas').then(siapkanLayarMasuk).catch(function () {});
+
+  // Sakelar "Tampilkan kata sandi" — berlaku untuk layar masuk,
+  // dialog ganti sandi, dan formulir pengguna.
+  document.addEventListener('change', function (e) {
+    var c = e.target;
+    if (!c.classList || !c.classList.contains('lihat-sandi')) return;
+    String(c.dataset.target || '').split(',').forEach(function (id) {
+      var f = el(id.trim());
+      if (f) f.type = c.checked ? 'text' : 'password';
+    });
+  });
+
+  el('formMasuk').addEventListener('submit', kirimMasuk);
+  el('btnMasuk').addEventListener('click', kirimMasuk);
+  el('mkSandi').addEventListener('keydown', function (e) { if (e.key === 'Enter') kirimMasuk(); });
+
+  var simpanan = null;
+  try { simpanan = sessionStorage.getItem('remaja_token'); } catch (e) {}
+  if (simpanan) {
+    TOKEN = simpanan;
+    panggilPublik('getBootstrap', TOKEN).then(masukBerhasil).catch(function () {
+      TOKEN = null;
+      try { sessionStorage.removeItem('remaja_token'); } catch (e) {}
+    });
+  }
+});
+
+function siapkanLayarMasuk(id) {
+  warnaiHalaman(id);
+  el('judulMasuk').textContent = id.nama_aplikasi;
+  el('subMasuk').textContent = (id.subjudul || '') + (id.nama_organisasi ? ' · ' + id.nama_organisasi : '');
+  if (id.logo_url) { el('logoMasuk').src = id.logo_url; el('logoMasuk').hidden = false; }
+}
+
+function kirimMasuk(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  var u = el('mkUser').value.trim(), s = el('mkSandi').value;
+  if (!u || !s) { el('pesanMasuk').textContent = 'Nama pengguna dan kata sandi wajib diisi.'; return false; }
+
+  el('btnMasuk').disabled = true;
+  el('pesanMasuk').textContent = '';
+  panggilPublik('masuk', u, s).then(function (sesi) {
+    TOKEN = sesi.token;
+    try { sessionStorage.setItem('remaja_token', TOKEN); } catch (err) {}
+    return panggilPublik('getBootstrap', TOKEN);
+  }).then(masukBerhasil).catch(function (err) {
+    el('pesanMasuk').textContent = err.message || 'Gagal masuk.';
+  }).then(function () { el('btnMasuk').disabled = false; });
+  return false;
+}
+
+function masukBerhasil(b) {
+  el('mkSandi').value = '';
+  el('layarMasuk').style.display = 'none';
+  el('aplikasi').hidden = false;
+  mulai(b);
+}
+
+function keluarPaksa(teks) {
+  TOKEN = null;
+  try { sessionStorage.removeItem('remaja_token'); } catch (e) {}
+  el('aplikasi').hidden = true;
+  el('layarMasuk').style.display = 'flex';
+  el('pesanMasuk').textContent = teks || '';
+  el('mkSandi').value = '';
+}
+
+/* ===========================================================
+   AWAL APLIKASI
+   =========================================================== */
+
+function mulai(b) {
+  APP.pengaturan = b.pengaturan; APP.sesi = b.sesi; APP.atlet = b.atlet;
+  APP.itemTes = b.itemTes; APP.komponen = b.komponen;
+  APP.kategori = b.kategori; APP.benchmark = b.benchmark; APP.pengguna = b.pengguna || [];
+
+  terapkanPengaturan(b.pengaturan);
+  el('labelPeran').textContent = APP.sesi.nama + ' · ' + APP.sesi.peran;
+  terapkanHakAkses();
+
+  isiRingkasan(b.ringkasan);
+  muatRekapMedaliAtlet();
+  isiPilihanAtlet();
+  bangunIsianTes();
+  isiFormPengaturan();
+  gambarAksesSiswa();
+  gambarCetakBagian();
+  isiFormCetak();
+  gambarTabelKomponen();
+  gambarTabelItem();
+  gambarTabelKategori();
+  isiPilihanBenchmark();
+  gambarTabelBenchmark();
+  gambarTabelAtlet();
+  gambarTabelPengguna();
+  muatPrestasi();
+  if (!mulai._terpasang) { pasangNavigasi(); pasangFormulir(); pasangKeuangan(); mulai._terpasang = true; }
+  siapkanKeuangan();
+
+  el('atTahun').value = new Date().getFullYear();
+  el('inTanggal').value = new Date().toISOString().slice(0, 10);
+
+  if (APP.atlet.length) muatDashboard();
+  else el('isiDashboard').innerHTML = '<p class="kosong">Belum ada atlet. Tambahkan lewat menu Data Atlet.</p>';
+}
+
+function warnaiHalaman(p) {
+  var r = document.documentElement.style;
+  if (p.warna_utama) r.setProperty('--utama', p.warna_utama);
+  if (p.warna_sekunder) r.setProperty('--sekunder', p.warna_sekunder);
+  if (p.warna_aksen) r.setProperty('--aksen', p.warna_aksen);
+  if (p.warna_background) r.setProperty('--bg', p.warna_background);
+}
+
+function terapkanPengaturan(p) {
+  warnaiHalaman(p);
+  el('namaAplikasi').textContent = p.nama_aplikasi || 'REMAJA';
+  el('subjudul').textContent = (p.subjudul || '') + (p.nama_organisasi ? ' · ' + p.nama_organisasi : '');
+  el('footerApp').textContent = p.footer || '';
+  el('infoUsia').textContent = 'Usia harus ' + p.usia_min + '–' + p.usia_max + ' tahun.';
+  if (p.logo_url) { el('logo').src = p.logo_url; el('logo').hidden = false; }
+  else { el('logo').hidden = true; }
+  el('bmMin').min = p.usia_min; el('bmMin').max = p.usia_max;
+  el('bmMaks').min = p.usia_min; el('bmMaks').max = p.usia_max;
+  terapkanGayaCetak(p);
+}
+
+/** Suntikkan aturan @page sesuai posisi & ukuran kertas pilihan admin,
+ *  supaya kotak dialog cetak/simpan-PDF browser mengikutinya. */
+function terapkanGayaCetak(p) {
+  var ukuran = p.cetak_ukuran || 'A4';
+  var ukuranCSS = ukuran === 'Letter' ? 'letter' : (ukuran === 'F4' ? '215mm 330mm' : 'A4');
+  var orientasi = p.cetak_orientasi === 'lanskap' ? 'landscape' : 'portrait';
+  var gaya = el('gayaCetak');
+  if (!gaya) {
+    gaya = document.createElement('style'); gaya.id = 'gayaCetak'; document.head.appendChild(gaya);
+  }
+  gaya.textContent = '@page{size:' + ukuranCSS + ' ' + orientasi + ';margin:14mm}';
+}
+
+/** Sembunyikan menu dan formulir yang tidak boleh diakses peran ini. */
+function terapkanHakAkses() {
+  var ubah = bolehUbah(), admin = adalahAdmin(), siswa = APP.sesi.peran === 'Siswa';
+  var izin = aksesSiswaSaatIni();
+  var boleh = function (hal) { return !siswa || izin.indexOf(hal) >= 0; };
+
+  el('navPengaturan').style.display = admin ? '' : 'none';
+  el('navKeuangan').style.display = ubah ? '' : 'none';   // Admin & Pelatih saja
+  el('navInput').style.display = ubah ? '' : 'none';
+  el('navAtlet').style.display = (ubah || boleh('atlet')) ? '' : 'none';
+  el('navDashboard').style.display = boleh('dashboard') ? '' : 'none';
+  el('navPrestasi').style.display = boleh('prestasi') ? '' : 'none';
+  el('navPerkembangan').style.display = boleh('perkembangan') ? '' : 'none';
+  el('navLaporan').style.display = boleh('laporan') ? '' : 'none';
+
+  // Siswa hanya melihat: seluruh formulir isian disembunyikan.
+  el('kartuFormPrestasi').style.display = ubah ? '' : 'none';
+  el('judulFormPrestasi').style.display = ubah ? '' : 'none';
+  document.querySelectorAll('#hal-atlet .kartu, #hal-atlet .judul').forEach(function (n, i) {
+    if (!ubah && i < 2) n.style.display = 'none';   // formulir atlet, sisakan daftar
+  });
+  el('rekapMedaliAtletWrap').style.display = boleh('prestasi') ? '' : 'none';
+
+  if (!ubah) bukaHalamanPertama();
+}
+
+/** Pindah ke menu pertama yang masih boleh dibuka peran ini. */
+function bukaHalamanPertama() {
+  var tombol = Array.prototype.slice.call(document.querySelectorAll('#navigasi button'))
+    .filter(function (b) { return b.style.display !== 'none'; })[0];
+  document.querySelectorAll('#navigasi button').forEach(function (b) { b.classList.remove('aktif'); });
+  document.querySelectorAll('.halaman').forEach(function (h) { h.classList.remove('tampil'); });
+  if (!tombol) {
+    el('aplikasi').insertAdjacentHTML('beforeend',
+      '<p class="kosong">Belum ada bagian yang dibuka untuk akun Anda. Hubungi admin akademi.</p>');
+    return;
+  }
+  tombol.classList.add('aktif');
+  el('hal-' + tombol.dataset.hal).classList.add('tampil');
+}
+
+/* ---------- Navigasi ---------- */
+
+function pasangNavigasi() {
+  el('navigasi').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    document.querySelectorAll('#navigasi button').forEach(function (x) { x.classList.remove('aktif'); });
+    b.classList.add('aktif');
+    document.querySelectorAll('.halaman').forEach(function (h) { h.classList.remove('tampil'); });
+    el('hal-' + b.dataset.hal).classList.add('tampil');
+    window.scrollTo(0, 0);
+  });
+}
+
+/* ===========================================================
+   DASHBOARD
+   =========================================================== */
+
+function isiRingkasan(r) {
+  el('ringkasanTim').innerHTML =
+    kartuStat(r.total_atlet, 'Total atlet') +
+    kartuStat(r.atlet_aktif, 'Atlet aktif') +
+    kartuStat(r.total_prestasi, 'Total prestasi') +
+    kartuStat('🥇' + r.medali.Emas + ' 🥈' + r.medali.Perak + ' 🥉' + r.medali.Perunggu, 'Perolehan medali');
+}
+
+function kartuStat(nilai, label) {
+  return '<div class="statistik"><b>' + aman(nilai) + '</b><span>' + aman(label) + '</span></div>';
+}
+
+function muatRekapMedaliAtlet() {
+  panggil('getSemuaPrestasi').then(function (daftar) {
+    var perAtlet = {};
+    daftar.forEach(function (p) {
+      if (!perAtlet[p.id_atlet]) perAtlet[p.id_atlet] = { nama: p.nama_atlet, prestasi: [] };
+      perAtlet[p.id_atlet].prestasi.push(p);
+    });
+
+    var baris = Object.keys(perAtlet).map(function (id) { return perAtlet[id]; })
+      .sort(function (a, b) { return b.prestasi.length - a.prestasi.length; });
+
+    if (!baris.length) {
+      el('rekapMedaliAtlet').innerHTML = '<tr><td class="kosong">Belum ada prestasi tercatat untuk atlet manapun.</td></tr>';
+      return;
+    }
+
+    var html = '<tr><th>Atlet</th><th class="angka">🥇 Emas</th><th class="angka">🥈 Perak</th>' +
+               '<th class="angka">🥉 Perunggu</th><th class="angka">Total</th></tr>';
+    baris.forEach(function (b) {
+      var m = hitungMedali_(b.prestasi);
+      html += '<tr><td>' + aman(b.nama) + '</td>' +
+        '<td class="angka">' + m.Emas + '</td><td class="angka">' + m.Perak + '</td>' +
+        '<td class="angka">' + m.Perunggu + '</td><td class="angka">' + b.prestasi.length + '</td></tr>';
+    });
+    el('rekapMedaliAtlet').innerHTML = html;
+  }).catch(function () {});
+}
+
+function isiPilihanAtlet() {
+  var opsi = APP.atlet.map(function (a) {
+    return '<option value="' + aman(a.id_atlet) + '">' + aman(a.id_atlet + ' — ' + a.nama) + '</option>';
+  }).join('');
+  ['pilihAtlet', 'inAtlet', 'prAtlet', 'pkAtlet', 'lpAtlet', 'kwLpAtlet'].forEach(function (id) {
+    var s = el(id), lama = s.value;
+    s.innerHTML = opsi;
+    if (lama) s.value = lama;
+  });
+  el('usAtlet').innerHTML = '<option value="">— tidak ditautkan —</option>' + opsi;
+}
+
+function muatDashboard(idTes) {
+  var id = el('pilihAtlet').value;
+  if (!id) return;
+  el('isiDashboard').innerHTML = '<p class="memuat">Memuat data…</p>';
+  panggil('getDashboard', id, idTes || null).then(function (d) {
+    APP.dashboard = d;
+    el('pilihTes').innerHTML = d.daftarTes.map(function (t) {
+      return '<option value="' + aman(t.id_tes) + '">' + aman(t.tanggal_tes) + '</option>';
+    }).join('') || '<option value="">belum ada tes</option>';
+    if (d.tes) el('pilihTes').value = d.tes.id_tes;
+    el('isiDashboard').innerHTML = bangunLaporanHTML_(d, false);
+  }).catch(function (e) {
+    el('isiDashboard').innerHTML = '<p class="kosong">' + aman(e.message) + '</p>';
+  });
+}
+
+/** Ukur lebar teks memakai kanvas tersembunyi — dipakai agar label diagram
+ *  tidak pernah terpotong, seberapa pun panjang nama komponen/item dibuat admin. */
+function lebarTeks_(teks, px, tebal) {
+  if (!lebarTeks_._ctx) lebarTeks_._ctx = document.createElement('canvas').getContext('2d');
+  var c = lebarTeks_._ctx;
+  c.font = (tebal ? '700 ' : '600 ') + px + 'px Inter, "Segoe UI", Arial, sans-serif';
+  return c.measureText(String(teks)).width;
+}
+
+/**
+ * Diagram radar/laba-laba untuk profil komponen kebugaran.
+ * Ukuran kanvas (viewBox) dihitung otomatis sesempit mungkin sesuai panjang
+ * label sebenarnya, lalu dibatasi ke lebar sedang lewat CSS (.diagram-radar) —
+ * jadi diagram tidak pernah tampil raksasa maupun memotong tulisan.
+ * Mengembalikan null bila komponen aktif kurang dari 3 — radar tidak
+ * bermakna untuk dua sumbu atau kurang, pemanggil memakai bar sebagai gantinya.
+ */
+function radarProfilSVG_(komponen) {
+  var data = komponen;
+  var n = data.length;
+  if (n < 3) return null;
+
+  var rMaks = 76, jarakLabel = 22, rLabel = rMaks + jarakLabel;
+  var ukNama = 11, ukPersen = 10.5, spasiBaris = 14, pad = 8;
+
+  var sudut = data.map(function (k, i) {
+    var a = (-90 + i * 360 / n) * Math.PI / 180;
+    return { cos: Math.cos(a), sin: Math.sin(a) };
+  });
+
+  var minX = 0, maxX = 0, minY = -rMaks, maxY = rMaks;
+  var label = data.map(function (k, i) {
+    var lx = rLabel * sudut[i].cos, ly = rLabel * sudut[i].sin;
+    var lebar = Math.max(lebarTeks_(k.nama, ukNama, true), lebarTeks_(persen(k.persen), ukPersen, true));
+    var anchor = Math.abs(lx) < 4 ? 'middle' : (lx > 0 ? 'start' : 'end');
+    var kiri = anchor === 'start' ? lx : (anchor === 'end' ? lx - lebar : lx - lebar / 2);
+    var kanan = anchor === 'start' ? lx + lebar : (anchor === 'end' ? lx : lx + lebar / 2);
+    minX = Math.min(minX, kiri); maxX = Math.max(maxX, kanan);
+    minY = Math.min(minY, ly - ukNama); maxY = Math.max(maxY, ly + spasiBaris + 4);
+    return { lx: lx, ly: ly, anchor: anchor, nama: k.nama, nilai: persen(k.persen) };
+  });
+
+  var cx = -minX + pad, cy = -minY + pad;
+  var w = (maxX - minX) + pad * 2, t = (maxY - minY) + pad * 2;
+
+  var svg = '<svg viewBox="0 0 ' + w.toFixed(0) + ' ' + t.toFixed(0) + '" width="100%" ' +
+            'style="overflow:visible" role="img" aria-label="Diagram radar profil komponen kebugaran">';
+
+  [0.25, 0.5, 0.75, 1].forEach(function (g) {
+    var pts = sudut.map(function (s) { return (cx + rMaks * g * s.cos) + ',' + (cy + rMaks * g * s.sin); });
+    svg += '<polygon points="' + pts.join(' ') + '" fill="none" stroke="#E2DFD7" stroke-width="1"/>';
+  });
+
+  sudut.forEach(function (s) {
+    svg += '<line x1="' + cx + '" y1="' + cy + '" x2="' + (cx + rMaks * s.cos) + '" y2="' + (cy + rMaks * s.sin) +
+           '" stroke="#E2DFD7" stroke-width="1"/>';
+  });
+
+  label.forEach(function (l) {
+    var x = cx + l.lx, y = cy + l.ly;
+    svg += '<text x="' + x + '" y="' + y + '" font-size="' + ukNama + '" font-weight="600" fill="#1D2023" ' +
+           'text-anchor="' + l.anchor + '">' + aman(l.nama) + '</text>';
+    svg += '<text x="' + x + '" y="' + (y + spasiBaris) + '" font-size="' + ukPersen + '" font-weight="700" ' +
+           'fill="#A81D26" text-anchor="' + l.anchor + '">' + aman(l.nilai) + '</text>';
+  });
+
+  var titikData = data.map(function (k, i) {
+    var r = rMaks * (k.persen || 0);
+    return (cx + r * sudut[i].cos) + ',' + (cy + r * sudut[i].sin);
+  });
+  svg += '<polygon points="' + titikData.join(' ') + '" fill="#A81D26" fill-opacity="0.20" ' +
+         'stroke="#A81D26" stroke-width="2.25" stroke-linejoin="round"/>';
+  data.forEach(function (k, i) {
+    var r = rMaks * (k.persen || 0);
+    svg += '<circle cx="' + (cx + r * sudut[i].cos) + '" cy="' + (cy + r * sudut[i].sin) + '" r="3.5" fill="#A81D26"/>';
+  });
+
+  svg += '</svg>';
+  return svg;
+}
+
+/**
+ * Diagram batang horizontal: capaian tiap item tes dibanding benchmark.
+ * Lebar kolom nama menyesuaikan panjang nama item sebenarnya agar tidak
+ * pernah terpotong, dengan batas atas supaya tidak menyusutkan bar terlalu jauh.
+ */
+function batangDetailSVG_(detail) {
+  if (!detail.length) return '<p class="kosong">Belum ada item tes.</p>';
+
+  var tinggiBar = 20, celah = 9, atas = 4, kananAngka = 78;
+  var labelMaks = 0;
+  detail.forEach(function (t) { labelMaks = Math.max(labelMaks, lebarTeks_(t.nama, 11, false)); });
+  var kiriLabel = Math.min(260, Math.max(96, labelMaks + 16));
+
+  var w = 620, lebarBar = w - kiriLabel - kananAngka;
+  var t = atas * 2 + detail.length * (tinggiBar + celah) - celah;
+
+  var svg = '<svg viewBox="0 0 ' + w + ' ' + t + '" width="100%" style="overflow:visible" role="img" ' +
+            'aria-label="Diagram capaian tiap item tes terhadap benchmark">';
+
+  detail.forEach(function (item, i) {
+    var y = atas + i * (tinggiBar + celah);
+    var p = item.persen === null ? 0 : item.persen;
+    var warna = item.persen === null ? '#C7C4BC'
+      : (item.persen < 0.6 ? '#C0392B' : (item.persen < 0.85 ? '#D9A31B' : '#186B39'));
+
+    svg += '<text x="' + (kiriLabel - 10) + '" y="' + (y + tinggiBar / 2 + 4) + '" font-size="11" ' +
+           'fill="#1D2023" text-anchor="end">' + aman(item.nama) + '</text>';
+    svg += '<rect x="' + kiriLabel + '" y="' + y + '" width="' + lebarBar + '" height="' + tinggiBar +
+           '" rx="5" fill="#F2F0EA"/>';
+    if (p > 0) {
+      svg += '<rect x="' + kiriLabel + '" y="' + y + '" width="' + (lebarBar * p) + '" height="' + tinggiBar +
+             '" rx="5" fill="' + warna + '"/>';
+    }
+    svg += '<text x="' + (kiriLabel + lebarBar + 10) + '" y="' + (y + tinggiBar / 2 + 4) + '" font-size="10.5" ' +
+           'fill="#5C646B">' + (item.persen === null ? 'belum diuji' : persen(item.persen)) + '</text>';
+  });
+
+  svg += '</svg>';
+  return svg;
+}
+
+/**
+ * Membangun HTML profil + hasil tes + prestasi satu atlet.
+ * Dipakai bersama oleh Dashboard dan halaman Laporan. Di Dashboard
+ * (modeCetak=false) seluruh bagian selalu ditampilkan lengkap. Saat dicetak
+ * (modeCetak=true), bagian, bentuk tampilan, dan pemisah halaman mengikuti
+ * pengaturan admin di menu Pengaturan → Pengaturan cetak laporan.
+ */
+function bangunLaporanHTML_(d, modeCetak) {
+  var a = d.atlet, h = d.hasil;
+  var cp = modeCetak ? pengaturanCetak() : null;
+  var ada = function (kunci) { return !cp || cp.bagian.indexOf(kunci) >= 0; };
+
+  var html = '<div class="kartu"><div class="biodata">' +
+    '<img class="foto" src="' + aman(a.foto_url) + '" alt="Foto ' + aman(a.nama) + '" ' +
+      'onerror="this.style.visibility=\'hidden\'">' +
+    '<dl>' +
+      baris('ID Atlet', a.id_atlet) + baris('Nama', a.nama) + baris('TTL', a.ttl) +
+      baris('Usia', a.usia + ' tahun') + baris('Gender', a.gender) +
+      baris('Tingkatan', a.tingkatan) + baris('Asal daerah', a.asal_daerah) +
+      baris('Status', a.status) +
+    '</dl></div></div>';
+
+  var prestasiHtml = '';
+  if (ada('prestasi')) {
+    var kelasPr = (modeCetak && cp.pisahPrestasi) ? ' cetak-halaman' : '';
+    prestasiHtml = '<div class="kartu' + kelasPr + '"><h3 style="margin-top:0">Prestasi ' + aman(a.nama) + '</h3>' +
+      rekapMedaliHTML_(d.prestasi, 'Rekap medali atlet ini');
+    if (d.prestasi.length) {
+      prestasiHtml += '<div class="tabelwrap"><table>' +
+        '<tr><th>Tanggal</th><th>Kejuaraan</th><th>Tingkat</th><th>Kategori</th><th>Medali</th></tr>';
+      d.prestasi.forEach(function (p) {
+        prestasiHtml += '<tr><td>' + aman(p.tanggal) + '</td><td>' + aman(p.nama_kejuaraan) + '</td>' +
+          '<td>' + aman(p.tingkat) + '</td><td>' + aman(p.kategori) + ' ' + aman(p.kelas) + '</td>' +
+          '<td>' + aman(p.medali) + '</td></tr>';
+      });
+      prestasiHtml += '</table></div>';
+    } else {
+      prestasiHtml += '<p class="kosong">Atlet ini belum memiliki catatan prestasi.</p>';
+    }
+    prestasiHtml += '</div>';
+  }
+
+  if (!h) {
+    return html + '<p class="kosong">Belum ada data tes untuk atlet ini.</p>' + prestasiHtml;
+  }
+
+  var kartuAntro = ada('antropometri')
+    ? '<div class="kartu"><h3 style="margin-top:0">Antropometri</h3><dl class="ringkas">' +
+        baris('Tinggi badan', angka(d.tes.tinggi_badan) + ' m') +
+        baris('Berat badan', angka(d.tes.berat_badan) + ' kg') +
+        baris('IMT', angka(h.imt)) +
+        baris('Kategori IMT', h.kategori_imt) +
+      '</dl></div>'
+    : '';
+  var kartuNadi = ada('nadi')
+    ? '<div class="kartu"><h3 style="margin-top:0">Skrining denyut nadi</h3><dl class="ringkas">' +
+        baris('Istirahat', angka(h.nadi_istirahat) + ' /menit (' + persen(h.persen_nadi_istirahat) + ')') +
+        baris('Latihan', angka(h.nadi_latihan) + ' /menit (' + persen(h.persen_nadi_latihan) + ')') +
+        baris('Maksimal', angka(h.nadi_maksimal) + ' /menit') +
+      '</dl></div>'
+    : '';
+  if (kartuAntro || kartuNadi) html += '<div class="grid k2">' + kartuAntro + kartuNadi + '</div>';
+
+  // Pemisah halaman "profil kebugaran" berlaku untuk blok pertama yang
+  // dirender di antara profil dan detail — supaya keduanya tetap satu halaman
+  // saat sama-sama tampil, tapi tidak kehilangan pemisahnya bila salah satu dimatikan.
+  var halamanKeduaBelumDimulai = true;
+  function kelasAwalHalamanKedua() {
+    if (!modeCetak || !cp.pisahProfil || !halamanKeduaBelumDimulai) return '';
+    halamanKeduaBelumDimulai = false;
+    return ' cetak-halaman';
+  }
+
+  if (ada('profil')) {
+    html += '<div class="kartu' + kelasAwalHalamanKedua() + '"><div class="profil-besar">' +
+      '<b style="color:' + aman(h.kategori.warna) + '">' + persen(h.profil, 1) + '</b>' +
+      '<span>Persentase profil kebugaran</span><br>' +
+      '<span class="lencana" style="background:' + aman(h.kategori.warna) + '">' + aman(h.kategori.label) + '</span>' +
+      '<p class="petunjuk">' + aman(h.kategori.deskripsi) + '</p></div>';
+
+    var tampilRadar = !cp || cp.bentukProfil !== 'bar';
+    var tampilBar = cp && (cp.bentukProfil === 'bar' || cp.bentukProfil === 'keduanya');
+    var radar = tampilRadar ? radarProfilSVG_(h.komponen) : null;
+
+    if (radar) html += '<div class="diagram-bungkus diagram-radar">' + radar + '</div>';
+    if (tampilBar || (tampilRadar && !radar)) {
+      h.komponen.forEach(function (k) {
+        html += '<div class="bar-baris"><div class="bar-label">' +
+          '<span>' + aman(k.nama) + ' <small style="color:var(--redup)">· bobot ' + k.bobot + '%</small></span>' +
+          '<span>' + persen(k.persen) + '</span></div>' +
+          '<div class="bar"><i style="width:' + ((k.persen || 0) * 100).toFixed(1) + '%"></i></div></div>';
+      });
+    }
+    html += '</div>';
+  }
+
+  if (ada('detail')) {
+    var kelasDetail = kelasAwalHalamanKedua();
+    var tampilDiagram = !cp || cp.bentukDetail !== 'tabel';
+    var tampilTabel = !cp || cp.bentukDetail !== 'diagram';
+
+    if (tampilDiagram) {
+      html += '<div class="kartu' + kelasDetail + '"><h3 style="margin-top:0">Capaian tiap item tes</h3>' +
+        '<div class="diagram-bungkus diagram-batang">' + batangDetailSVG_(h.detail) + '</div></div>';
+      kelasDetail = '';
+    }
+
+    if (tampilTabel) {
+      html += '<div class="kartu' + kelasDetail + '"><h3 style="margin-top:0">Detail hasil tes</h3><div class="tabelwrap"><table>' +
+        '<tr><th>Komponen</th><th>Item tes</th><th class="angka">Benchmark</th><th class="angka">Hasil</th>' +
+        '<th class="angka">% Capaian</th><th class="angka">Kekurangan</th></tr>';
+      h.detail.forEach(function (t) {
+        html += '<tr' + (t.persen !== null && t.persen < 0.6 ? ' class="kurang"' : '') + '>' +
+          '<td>' + aman(t.komponen) + '</td>' +
+          '<td>' + aman(t.nama) + ' <small style="color:var(--redup)">(' + aman(t.satuan) + ', ' + aman(t.arah) + ')</small></td>' +
+          '<td class="angka">' + angka(t.benchmark) + '</td>' +
+          '<td class="angka">' + angka(t.hasil) + '</td>' +
+          '<td class="angka">' + persen(t.persen) + '</td>' +
+          '<td class="angka">' + persen(t.kekurangan) + '</td></tr>';
+      });
+      html += '</table></div>';
+      if (!modeCetak) {
+        html += '<button class="tombol kedua" onclick="bukaLaporan(\'' + aman(a.id_atlet) + '\',\'' +
+          aman(d.tes ? d.tes.id_tes : '') + '\')">📄 Buka laporan lengkap</button>';
+      }
+      html += '</div>';
+    }
+  }
+
+  return html + prestasiHtml;
+}
+
+function bukaLaporan(idAtlet, idTes) {
+  document.querySelector('#navigasi button[data-hal="laporan"]').click();
+  el('lpAtlet').value = idAtlet;
+  muatLaporan(idTes);
+}
+
+function muatLaporan(idTesPilih) {
+  var id = el('lpAtlet').value;
+  if (!id) { el('isiLaporan').innerHTML = '<p class="kosong">Pilih atlet untuk melihat laporan.</p>'; return; }
+  el('isiLaporan').innerHTML = '<p class="memuat">Memuat data…</p>';
+  panggil('getDashboard', id, idTesPilih || null).then(function (d) {
+    el('lpTes').innerHTML = d.daftarTes.map(function (t) {
+      return '<option value="' + aman(t.id_tes) + '">' + aman(t.tanggal_tes) + '</option>';
+    }).join('') || '<option value="">belum ada tes</option>';
+    if (d.tes) el('lpTes').value = d.tes.id_tes;
+    el('isiLaporan').innerHTML = bangunLaporanHTML_(d, true);
+  }).catch(function (e) {
+    el('isiLaporan').innerHTML = '<p class="kosong">' + aman(e.message) + '</p>';
+  });
+}
+
+function hitungMedali_(daftar) {
+  var m = { Emas: 0, Perak: 0, Perunggu: 0, Partisipasi: 0 };
+  daftar.forEach(function (p) { if (m[p.medali] !== undefined) m[p.medali]++; });
+  return m;
+}
+
+function rekapMedaliHTML_(daftar, label) {
+  var m = hitungMedali_(daftar);
+  return '<div class="rekap-medali"><span class="rekap-label">' + aman(label) + '</span>' +
+    '<span>🥇 ' + m.Emas + ' Emas</span><span>🥈 ' + m.Perak + ' Perak</span>' +
+    '<span>🥉 ' + m.Perunggu + ' Perunggu</span></div>';
+}
+
+function baris(k, v) {
+  return '<dt>' + aman(k) + '</dt><dd>' + aman(v || '–') + '</dd>';
+}
+
+/* ===========================================================
+   INPUT PERFORMA
+   =========================================================== */
+
+function bangunIsianTes() {
+  el('isianTes').innerHTML = itemAktif().map(function (t) {
+    return '<div><label for="in_' + aman(t.kunci) + '">' + aman(t.nama) +
+      (t.satuan ? ' (' + aman(t.satuan) + ')' : '') + '</label>' +
+      '<input type="number" step="0.01" id="in_' + aman(t.kunci) + '" class="isian"></div>';
+  }).join('') || '<p class="kosong">Belum ada item tes aktif. Atur lewat menu Pengaturan.</p>';
+}
+
+function kumpulkanTes() {
+  var data = {
+    id_tes: el('inIdTes').value,
+    id_atlet: el('inAtlet').value,
+    tanggal_tes: el('inTanggal').value,
+    pelatih: el('inPelatih').value,
+    nadi_istirahat: el('in_nadi_istirahat').value,
+    nadi_latihan: el('in_nadi_latihan').value,
+    tinggi_badan: el('in_tinggi_badan').value,
+    berat_badan: el('in_berat_badan').value
+  };
+  itemAktif().forEach(function (t) {
+    var inp = el('in_' + t.kunci);
+    if (inp) data[t.kunci] = inp.value;
+  });
+  return data;
+}
+
+function muatRiwayatTes() {
+  var id = el('inAtlet').value;
+  if (!id) { el('tabelRiwayatTes').innerHTML = ''; APP.riwayatTes = []; return; }
+  panggil('getTesAtlet', id).then(function (daftar) {
+    APP.riwayatTes = daftar;
+    var html = '<tr><th>Tanggal</th><th>Pelatih</th><th></th></tr>';
+    if (!daftar.length) html += '<tr><td colspan="3" class="kosong">Belum ada sesi tes.</td></tr>';
+    daftar.forEach(function (t) {
+      html += '<tr><td>' + aman(t.tanggal_tes) + '</td><td>' + aman(t.pelatih) + '</td><td class="aksi">' +
+        '<button class="tombol tombol-kecil" onclick="editTes(\'' + aman(t.id_tes) + '\')">Edit</button>' +
+        (adalahAdmin()
+          ? '<button class="tombol bahaya tombol-kecil" onclick="hapusTesUI(\'' + aman(t.id_tes) + '\')">Hapus</button>'
+          : '') +
+        '</td></tr>';
+    });
+    el('tabelRiwayatTes').innerHTML = html;
+  }).catch(function () {});
+}
+
+function editTes(idTes) {
+  var t = APP.riwayatTes.filter(function (x) { return String(x.id_tes) === idTes; })[0];
+  if (!t) return;
+  el('inIdTes').value = t.id_tes;
+  el('inTanggal').value = t.tanggal_tes; el('inPelatih').value = t.pelatih || '';
+  el('in_nadi_istirahat').value = t.nadi_istirahat || '';
+  el('in_nadi_latihan').value = t.nadi_latihan || '';
+  el('in_tinggi_badan').value = t.tinggi_badan || '';
+  el('in_berat_badan').value = t.berat_badan || '';
+  itemAktif().forEach(function (it) {
+    var inp = el('in_' + it.kunci);
+    if (inp) inp.value = t[it.kunci] || '';
+  });
+  el('pratinjauHasil').innerHTML = '';
+  window.scrollTo(0, 0);
+}
+
+function resetFieldTes_() {
+  el('inIdTes').value = '';
+  el('inTanggal').value = new Date().toISOString().slice(0, 10);
+  el('inPelatih').value = '';
+  ['in_nadi_istirahat', 'in_nadi_latihan', 'in_tinggi_badan', 'in_berat_badan']
+    .forEach(function (i) { el(i).value = ''; });
+  itemAktif().forEach(function (t) { var inp = el('in_' + t.kunci); if (inp) inp.value = ''; });
+}
+
+function kosongkanFormTes() {
+  resetFieldTes_();
+  el('pratinjauHasil').innerHTML = '';
+}
+
+function hapusTesUI(idTes) {
+  if (!confirm('Hapus sesi tes ini? Tindakan tidak dapat dibatalkan.')) return;
+  panggil('hapusTes', idTes).then(function () {
+    pesan('Sesi tes dihapus.');
+    muatRiwayatTes();
+    if (el('pilihAtlet').value === el('inAtlet').value) muatDashboard();
+  }).catch(function (e) { pesan(e.message, true); });
+}
+
+function gambarPratinjau(h) {
+  var html = '<div class="kartu"><h3 style="margin-top:0">Pratinjau perhitungan</h3>' +
+    '<p>IMT <b>' + angka(h.imt) + '</b> (' + aman(h.kategori_imt) + ') · ' +
+    'Nadi maksimal <b>' + angka(h.nadi_maksimal) + '</b> /menit</p>' +
+    '<div class="profil-besar"><b style="color:' + aman(h.kategori.warna) + '">' + persen(h.profil) + '</b>' +
+    '<span class="lencana" style="background:' + aman(h.kategori.warna) + '">' + aman(h.kategori.label) + '</span></div>';
+  h.komponen.forEach(function (k) {
+    html += '<div class="bar-baris"><div class="bar-label"><span>' + aman(k.nama) + '</span>' +
+      '<span>' + persen(k.persen) + '</span></div><div class="bar"><i style="width:' +
+      ((k.persen || 0) * 100).toFixed(1) + '%"></i></div></div>';
+  });
+  el('pratinjauHasil').innerHTML = html + '</div>';
+}
+
+/* ===========================================================
+   DATA ATLET
+   =========================================================== */
+
+function gambarTabelAtlet() {
+  var cari = (el('cariAtlet').value || '').toLowerCase();
+  var baris = APP.atlet.filter(function (a) {
+    return !cari || (a.nama + ' ' + a.id_atlet).toLowerCase().indexOf(cari) >= 0;
+  });
+  var html = '<tr><th>ID</th><th>Nama</th><th class="angka">Usia</th><th>Gender</th>' +
+             '<th>Tingkatan</th><th>Status</th><th></th></tr>';
+  if (!baris.length) html += '<tr><td colspan="7" class="kosong">Belum ada data.</td></tr>';
+  baris.forEach(function (a) {
+    html += '<tr><td>' + aman(a.id_atlet) + '</td><td>' + aman(a.nama) + '</td>' +
+      '<td class="angka">' + aman(a.usia) + '</td><td>' + aman(a.gender) + '</td>' +
+      '<td>' + aman(a.tingkatan) + '</td><td>' + aman(a.status) + '</td>' +
+      '<td class="aksi"><button class="tombol tombol-kecil" onclick="editAtlet(\'' + aman(a.id_atlet) + '\')">Edit</button>' +
+      (adalahAdmin() && a.status !== 'Non-aktif'
+        ? '<button class="tombol bahaya tombol-kecil" onclick="nonaktifkanAtlet(\'' + aman(a.id_atlet) + '\')">Non-aktifkan</button>'
+        : '') + '</td></tr>';
+  });
+  el('tabelAtlet').innerHTML = html;
+}
+
+function editAtlet(id) {
+  var a = APP.atlet.filter(function (x) { return x.id_atlet === id; })[0];
+  if (!a) return;
+  el('atId').value = a.id_atlet; el('atNama').value = a.nama;
+  el('atTempat').value = a.tempat_lahir || ''; el('atTanggal').value = a.tanggal_lahir || '';
+  el('atGender').value = a.gender || ''; el('atAsal').value = a.asal_daerah || '';
+  el('atTingkat').value = a.tingkatan || ''; el('atStatus').value = a.status || 'Aktif';
+  el('atTahun').value = a.tahun_bergabung || ''; el('atCatatan').value = a.catatan || '';
+  el('atPratinjau').src = a.foto_url || '';
+  el('atFoto').value = ''; APP.fotoAtlet = null;
+  window.scrollTo(0, 0);
+}
+
+function nonaktifkanAtlet(id) {
+  if (!confirm('Non-aktifkan atlet ini? Data tes dan prestasinya tetap tersimpan.')) return;
+  panggil('hapusAtlet', id).then(function () {
+    return panggil('getDaftarAtlet');
+  }).then(function (daftar) {
+    APP.atlet = daftar; isiPilihanAtlet(); gambarTabelAtlet(); pesan('Atlet dinonaktifkan.');
+  }).catch(function (e) { pesan(e.message, true); });
+}
+
+function kosongkanFormAtlet() {
+  ['atId','atNama','atTempat','atTanggal','atAsal','atTingkat','atCatatan']
+    .forEach(function (i) { el(i).value = ''; });
+  el('atGender').value = ''; el('atStatus').value = 'Aktif';
+  el('atTahun').value = new Date().getFullYear();
+  el('atPratinjau').removeAttribute('src');
+  el('atFoto').value = ''; APP.fotoAtlet = null;
+}
+
+/* ===========================================================
+   PRESTASI
+   =========================================================== */
+
+function muatPrestasi() {
+  panggil('getSemuaPrestasi').then(function (d) {
+    APP.prestasiSemua = d;
+    var html = '<tr><th>Tanggal</th><th>Atlet</th><th>Kejuaraan</th><th>Tingkat</th>' +
+               '<th>Kategori</th><th>Medali</th><th></th></tr>';
+    if (!d.length) html += '<tr><td colspan="7" class="kosong">Belum ada prestasi tercatat.</td></tr>';
+    d.forEach(function (p) {
+      html += '<tr><td>' + aman(p.tanggal) + '</td><td>' + aman(p.nama_atlet) + '</td>' +
+        '<td>' + aman(p.nama_kejuaraan) + '</td><td>' + aman(p.tingkat) + '</td>' +
+        '<td>' + aman(p.kategori) + ' ' + aman(p.kelas) + '</td><td>' + aman(p.medali) + '</td>' +
+        '<td class="aksi">' + (p.bukti_url ? '<a href="' + aman(p.bukti_url) + '" target="_blank" rel="noopener">bukti</a> ' : '') +
+        (bolehUbah() ? '<button class="tombol tombol-kecil" onclick="editPrestasi(\'' + aman(p.id_prestasi) + '\')">Edit</button>' : '') +
+        (adalahAdmin() ? '<button class="tombol bahaya tombol-kecil" onclick="hapusPrestasiUI(\'' + aman(p.id_prestasi) + '\')">Hapus</button>' : '') +
+        '</td></tr>';
+    });
+    el('tabelPrestasi').innerHTML = html;
+  }).catch(function () {});
+}
+
+function editPrestasi(id) {
+  var p = APP.prestasiSemua.filter(function (x) { return String(x.id_prestasi) === id; })[0];
+  if (!p) return;
+  el('prId').value = p.id_prestasi; el('prAtlet').value = p.id_atlet;
+  el('prKejuaraan').value = p.nama_kejuaraan || ''; el('prTingkat').value = p.tingkat || '';
+  el('prTanggal').value = p.tanggal || ''; el('prTempat').value = p.tempat || '';
+  el('prPenyelenggara').value = p.penyelenggara || ''; el('prKategori').value = p.kategori || '';
+  el('prKelas').value = p.kelas || ''; el('prMedali').value = p.medali || '';
+  el('prCatatan').value = p.catatan || '';
+  el('prBukti').value = ''; APP.fotoBukti = null;
+  window.scrollTo(0, el('hal-prestasi').offsetTop);
+}
+
+function hapusPrestasiUI(id) {
+  if (!confirm('Hapus prestasi ini? Tindakan tidak dapat dibatalkan.')) return;
+  panggil('hapusPrestasi', id).then(function () {
+    pesan('Prestasi dihapus.'); muatPrestasi(); muatRekapMedaliAtlet();
+    if (APP.dashboard && APP.dashboard.atlet.id_atlet === el('pilihAtlet').value) muatDashboard();
+  }).catch(function (e) { pesan(e.message, true); });
+}
+
+function kosongkanFormPrestasi() {
+  ['prId','prKejuaraan','prTanggal','prTempat','prPenyelenggara','prKelas','prCatatan']
+    .forEach(function (i) { el(i).value = ''; });
+  el('prBukti').value = ''; APP.fotoBukti = null;
+}
+
+/* ===========================================================
+   PERKEMBANGAN
+   =========================================================== */
+
+function muatPerkembangan() {
+  var id = el('pkAtlet').value; if (!id) return;
+  el('isiPerkembangan').innerHTML = '<p class="memuat">Memuat…</p>';
+  panggil('getDashboard', id, null).then(function (d) {
+    if (!d.riwayat.length) {
+      el('isiPerkembangan').innerHTML = '<p class="kosong">Belum ada data tes.</p>'; return;
+    }
+    if (d.riwayat.length === 1) {
+      el('isiPerkembangan').innerHTML =
+        '<p class="kosong">Baru ada satu sesi tes (' + aman(d.riwayat[0].tanggal) +
+        '). Grafik perkembangan muncul setelah tes kedua disimpan.</p>';
+      return;
+    }
+    el('isiPerkembangan').innerHTML = gambarGrafik(d.riwayat) + tabelPerbandingan(d.riwayat);
+  }).catch(function (e) {
+    el('isiPerkembangan').innerHTML = '<p class="kosong">' + aman(e.message) + '</p>';
+  });
+}
+
+function gambarGrafik(riwayat) {
+  var w = 640, t = 260, kiri = 42, bawah = 28, atas = 14;
+  var n = riwayat.length;
+  var x = function (i) { return kiri + (w - kiri - 12) * (n === 1 ? 0.5 : i / (n - 1)); };
+  var y = function (v) { return atas + (t - atas - bawah) * (1 - (v || 0)); };
+  var kmp = komponenAktif();
+
+  var svg = '<svg viewBox="0 0 ' + w + ' ' + t + '" width="100%" role="img" ' +
+            'aria-label="Grafik perkembangan tiap komponen">';
+  [0, 0.25, 0.5, 0.75, 1].forEach(function (g) {
+    svg += '<line x1="' + kiri + '" y1="' + y(g) + '" x2="' + (w - 12) + '" y2="' + y(g) +
+           '" stroke="#DEDCD6"/><text x="4" y="' + (y(g) + 4) + '" font-size="10" fill="#5C646B">' +
+           (g * 100) + '%</text>';
+  });
+  kmp.forEach(function (k, idx) {
+    var warna = warnaKomponen(idx);
+    var titik = riwayat.map(function (r, i) { return x(i) + ',' + y(r[k.id_komponen]); }).join(' ');
+    svg += '<polyline points="' + titik + '" fill="none" stroke="' + warna + '" stroke-width="2"/>';
+    riwayat.forEach(function (r, i) {
+      svg += '<circle cx="' + x(i) + '" cy="' + y(r[k.id_komponen]) + '" r="3" fill="' + warna + '"/>';
+    });
+  });
+  riwayat.forEach(function (r, i) {
+    svg += '<text x="' + x(i) + '" y="' + (t - 8) + '" font-size="10" fill="#5C646B" text-anchor="middle">' +
+           aman(r.tanggal) + '</text>';
+  });
+  svg += '</svg>';
+
+  var legenda = '<div class="legenda">' + kmp.map(function (k, i) {
+    return '<span><i style="background:' + warnaKomponen(i) + '"></i>' + aman(k.nama) + '</span>';
+  }).join('') + '</div>';
+
+  return '<div class="kartu">' + svg + legenda + '</div>';
+}
+
+function tabelPerbandingan(riwayat) {
+  var awal = riwayat[0], akhir = riwayat[riwayat.length - 1];
+  var html = '<div class="kartu"><h3 style="margin-top:0">Tes awal vs tes terbaru</h3><div class="tabelwrap"><table>' +
+    '<tr><th>Komponen</th><th class="angka">' + aman(awal.tanggal) + '</th>' +
+    '<th class="angka">' + aman(akhir.tanggal) + '</th><th class="angka">Perubahan</th></tr>';
+
+  var daftar = komponenAktif().map(function (k) { return { kunci: k.id_komponen, nama: k.nama }; });
+  daftar.push({ kunci: 'profil', nama: 'Profil keseluruhan', tebal: true });
+
+  daftar.forEach(function (k) {
+    var a = awal[k.kunci], b = akhir[k.kunci];
+    var selisih = (a === null || b === null || a === undefined || b === undefined) ? null : b - a;
+    var tanda = selisih === null ? '' : (selisih >= 0 ? '▲ ' : '▼ ');
+    html += '<tr><td>' + (k.tebal ? '<b>' + aman(k.nama) + '</b>' : aman(k.nama)) + '</td>' +
+      '<td class="angka">' + persen(a) + '</td><td class="angka">' + persen(b) + '</td>' +
+      '<td class="angka">' + tanda + persen(selisih === null ? null : Math.abs(selisih)) + '</td></tr>';
+  });
+  return html + '</table></div></div>';
+}
+
+/* ===========================================================
+   PENGATURAN — identitas
+   =========================================================== */
+
+function isiFormPengaturan() {
+  var p = APP.pengaturan;
+  el('stNama').value = p.nama_aplikasi || ''; el('stSub').value = p.subjudul || '';
+  el('stOrg').value = p.nama_organisasi || ''; el('stFooter').value = p.footer || '';
+  el('stUtama').value = p.warna_utama || '#A81D26';
+  el('stSekunder').value = p.warna_sekunder || '#1D2023';
+  el('stAksen').value = p.warna_aksen || '#D9A31B';
+  el('stBg').value = p.warna_background || '#FBFAF7';
+  el('stUsiaMin').value = p.usia_min; el('stUsiaMaks').value = p.usia_max;
+  if (p.logo_url) el('stLogoPratinjau').src = p.logo_url;
+  else el('stLogoPratinjau').removeAttribute('src');
+  el('stLogo').value = ''; APP.fotoLogo = null;
+}
+
+/* ---------- Hak akses siswa ---------- */
+
+/** Daftar acuan ada di klien juga supaya menu tetap tampil walau
+ *  server mengirim pengaturan versi lama. */
+var HALAMAN_SISWA = [
+  { kunci: 'dashboard',    nama: 'Dashboard',    ket: 'Profil kebugaran & hasil tes' },
+  { kunci: 'prestasi',     nama: 'Prestasi',     ket: 'Daftar kejuaraan & medali' },
+  { kunci: 'perkembangan', nama: 'Perkembangan', ket: 'Grafik antar sesi tes' },
+  { kunci: 'laporan',      nama: 'Laporan',      ket: 'Cetak / simpan PDF' },
+  { kunci: 'atlet',        nama: 'Data Atlet',   ket: 'Biodata, hanya melihat' }
+];
+
+var AKSES_SISWA_BAWAAN = ['dashboard', 'prestasi', 'perkembangan', 'laporan'];
+
+/** Pengaturan bisa datang sebagai larik, teks berkoma, atau belum ada sama sekali. */
+function aksesSiswaSaatIni() {
+  return daftarDariPengaturan_(APP.pengaturan.akses_siswa, AKSES_SISWA_BAWAAN);
+}
+
+function gambarAksesSiswa() {
+  if (!adalahAdmin()) return;
+  var izin = aksesSiswaSaatIni();
+  el('daftarAksesSiswa').innerHTML = HALAMAN_SISWA.map(function (h) {
+    return '<label class="pilihan"><input type="checkbox" class="aks" value="' + aman(h.kunci) + '"' +
+      (izin.indexOf(h.kunci) >= 0 ? ' checked' : '') + '>' +
+      '<span><b>' + aman(h.nama) + '</b><small>' + aman(h.ket) + '</small></span></label>';
+  }).join('');
+}
+
+/* ---------- Pengaturan cetak laporan ---------- */
+
+/** Daftar bagian laporan hidup di klien juga, seperti hak akses siswa,
+ *  supaya menu tetap tampil walau server mengirim pengaturan versi lama. */
+var CETAK_BAGIAN = [
+  { kunci: 'antropometri', nama: 'Antropometri & IMT', ket: 'Tinggi, berat, dan kategori IMT' },
+  { kunci: 'nadi',         nama: 'Skrining denyut nadi', ket: 'Nadi istirahat, latihan, maksimal' },
+  { kunci: 'profil',       nama: 'Profil kebugaran', ket: 'Skor keseluruhan & diagram komponen' },
+  { kunci: 'detail',       nama: 'Detail tiap item tes', ket: 'Diagram dan/atau tabel per item' },
+  { kunci: 'prestasi',     nama: 'Prestasi & medali', ket: 'Daftar kejuaraan yang pernah diikuti' }
+];
+var CETAK_BAGIAN_BAWAAN = CETAK_BAGIAN.map(function (b) { return b.kunci; });
+
+/** Pengaturan berbentuk daftar (akses siswa, bagian cetak) bisa datang
+ *  sebagai larik, teks berkoma, atau belum ada sama sekali di server lama. */
+function daftarDariPengaturan_(nilai, bawaan) {
+  if (nilai instanceof Array) return nilai;
+  if (typeof nilai === 'string' && nilai) {
+    return nilai.split(',').map(function (s) { return s.trim(); }).filter(function (s) { return s; });
+  }
+  return bawaan.slice();
+}
+
+function cetakBagianSaatIni() {
+  return daftarDariPengaturan_(APP.pengaturan.cetak_bagian, CETAK_BAGIAN_BAWAAN);
+}
+
+/** Ringkasan pengaturan cetak dengan nilai bawaan siap pakai. */
+function pengaturanCetak() {
+  var p = APP.pengaturan;
+  return {
+    bagian: cetakBagianSaatIni(),
+    bentukProfil: p.cetak_bentuk_profil || 'radar',
+    bentukDetail: p.cetak_bentuk_detail || 'keduanya',
+    pisahProfil: String(p.cetak_pisah_profil || 'YA').toUpperCase() !== 'TIDAK',
+    pisahPrestasi: String(p.cetak_pisah_prestasi || 'YA').toUpperCase() !== 'TIDAK'
+  };
+}
+
+function gambarCetakBagian() {
+  if (!adalahAdmin()) return;
+  var pilih = cetakBagianSaatIni();
+  el('daftarCetakBagian').innerHTML = CETAK_BAGIAN.map(function (b) {
+    return '<label class="pilihan"><input type="checkbox" class="ctk" value="' + aman(b.kunci) + '"' +
+      (pilih.indexOf(b.kunci) >= 0 ? ' checked' : '') + '>' +
+      '<span><b>' + aman(b.nama) + '</b><small>' + aman(b.ket) + '</small></span></label>';
+  }).join('');
+}
+
+function isiFormCetak() {
+  if (!adalahAdmin()) return;
+  var p = APP.pengaturan;
+  el('stCetakBentukProfil').value = p.cetak_bentuk_profil || 'radar';
+  el('stCetakBentukDetail').value = p.cetak_bentuk_detail || 'keduanya';
+  el('stCetakOrientasi').value = p.cetak_orientasi || 'potret';
+  el('stCetakUkuran').value = p.cetak_ukuran || 'A4';
+  el('stCetakPisahProfil').checked = String(p.cetak_pisah_profil || 'YA').toUpperCase() !== 'TIDAK';
+  el('stCetakPisahPrestasi').checked = String(p.cetak_pisah_prestasi || 'YA').toUpperCase() !== 'TIDAK';
+}
+
+/* ---------- Komponen ---------- */
+
+function gambarTabelKomponen() {
+  var html = '<tr><th>Nama komponen</th><th class="angka">Bobot (%)</th><th>Aktif</th><th></th></tr>';
+  if (!APP.komponen.length) html += '<tr><td colspan="4" class="kosong">Belum ada komponen.</td></tr>';
+  APP.komponen.forEach(function (k, i) {
+    html += '<tr>' +
+      '<td><input type="text" class="kmp" data-f="nama" data-i="' + i + '" value="' + aman(k.nama) + '"></td>' +
+      '<td><input type="number" class="kmp" data-f="bobot" data-i="' + i + '" value="' + aman(k.bobot) + '"></td>' +
+      '<td><select class="kmp" data-f="aktif" data-i="' + i + '">' +
+        '<option' + (k.aktif !== 'TIDAK' ? ' selected' : '') + '>YA</option>' +
+        '<option' + (k.aktif === 'TIDAK' ? ' selected' : '') + '>TIDAK</option></select></td>' +
+      '<td class="aksi"><button class="tombol bahaya tombol-kecil" onclick="hapusKomponenUI(' + i + ')">Hapus</button></td>' +
+      '</tr>';
+  });
+  el('tabelKomponen').innerHTML = html;
+  el('tabelKomponen').oninput = function () { serapKomponen(); hitungTotalBobot(); };
+  el('tabelKomponen').onchange = function () { serapKomponen(); hitungTotalBobot(); };
+  hitungTotalBobot();
+}
+
+function serapKomponen() {
+  document.querySelectorAll('.kmp').forEach(function (inp) {
+    APP.komponen[inp.dataset.i][inp.dataset.f] =
+      inp.dataset.f === 'bobot' ? Number(inp.value) : inp.value;
+  });
+}
+
+function hitungTotalBobot() {
+  var total = APP.komponen
+    .filter(function (k) { return String(k.aktif).toUpperCase() !== 'TIDAK'; })
+    .reduce(function (a, b) { return a + (Number(b.bobot) || 0); }, 0);
+  var s = el('totalBobot');
+  s.textContent = Math.round(total) + '%';
+  s.style.color = Math.round(total) === 100 ? 'var(--redup)' : '#B0262E';
+}
+
+function hapusKomponenUI(i) {
+  var k = APP.komponen[i];
+  if (!k) return;
+  if (!k.id_komponen) { APP.komponen.splice(i, 1); gambarTabelKomponen(); return; }
+  if (!confirm('Hapus komponen "' + k.nama + '"? Komponen hanya bisa dihapus bila tidak lagi dipakai item tes.')) return;
+  panggil('hapusKomponen', k.id_komponen).then(function (daftar) {
+    APP.komponen = daftar; gambarTabelKomponen(); gambarTabelItem();
+    pesan('Komponen dihapus.'); muatDashboard();
+  }).catch(function (e) { pesan(e.message, true); });
+}
+
+/* ---------- Item tes ---------- */
+
+function gambarTabelItem() {
+  // Komponen non-aktif tetap dimunculkan supaya item yang menempel padanya
+  // tidak kehilangan tautan saat daftar disimpan ulang.
+  var opsiKmp = APP.komponen.map(function (k) {
+    return '<option value="' + aman(k.id_komponen) + '">' + aman(k.nama) +
+      (k.aktif === 'TIDAK' ? ' (nonaktif)' : '') + '</option>';
+  }).join('');
+
+  var html = '<tr><th>Nama item</th><th>Komponen</th><th>Satuan</th><th>Arah</th><th>Aktif</th><th></th></tr>';
+  if (!APP.itemTes.length) html += '<tr><td colspan="6" class="kosong">Belum ada item tes.</td></tr>';
+  APP.itemTes.forEach(function (t, i) {
+    html += '<tr>' +
+      '<td><input type="text" class="itm" data-f="nama" data-i="' + i + '" value="' + aman(t.nama) + '"></td>' +
+      '<td><select class="itm" data-f="id_komponen" data-i="' + i + '">' + opsiKmp + '</select></td>' +
+      '<td><input type="text" class="itm" data-f="satuan" data-i="' + i + '" value="' + aman(t.satuan) + '"></td>' +
+      '<td><select class="itm" data-f="arah" data-i="' + i + '">' +
+        '<option value="HIGHER"' + (t.arah !== 'LOWER' ? ' selected' : '') + '>Makin besar makin baik</option>' +
+        '<option value="LOWER"' + (t.arah === 'LOWER' ? ' selected' : '') + '>Makin kecil makin baik</option></select></td>' +
+      '<td><select class="itm" data-f="aktif" data-i="' + i + '">' +
+        '<option' + (t.aktif !== 'TIDAK' ? ' selected' : '') + '>YA</option>' +
+        '<option' + (t.aktif === 'TIDAK' ? ' selected' : '') + '>TIDAK</option></select></td>' +
+      '<td class="aksi"><button class="tombol bahaya tombol-kecil" onclick="hapusItemUI(' + i + ')">Hapus</button></td>' +
+      '</tr>';
+  });
+  el('tabelItem').innerHTML = html;
+
+  // Pasang nilai terpilih setelah tabel dibangun agar komponen lama tetap terbaca.
+  APP.itemTes.forEach(function (t, i) {
+    var s = document.querySelector('.itm[data-f="id_komponen"][data-i="' + i + '"]');
+    if (s) s.value = t.id_komponen;
+  });
+
+  el('tabelItem').oninput = serapItem;
+  el('tabelItem').onchange = serapItem;
+}
+
+function serapItem() {
+  document.querySelectorAll('.itm').forEach(function (inp) {
+    APP.itemTes[inp.dataset.i][inp.dataset.f] = inp.value;
+  });
+}
+
+function hapusItemUI(i) {
+  var t = APP.itemTes[i];
+  if (!t) return;
+  if (!t.id_item) { APP.itemTes.splice(i, 1); gambarTabelItem(); return; }
+  if (!confirm('Hapus item tes "' + t.nama + '" beserta seluruh benchmark-nya?\n\n' +
+               'Hasil tes lama tetap tersimpan di spreadsheet, tetapi tidak lagi ditampilkan.')) return;
+  panggil('hapusItemTes', t.id_item).then(function (daftar) {
+    APP.itemTes = daftar;
+    return panggil('getBenchmark');
+  }).then(function (bm) {
+    APP.benchmark = bm;
+    gambarTabelItem(); bangunIsianTes(); isiPilihanBenchmark(); gambarTabelBenchmark();
+    pesan('Item tes dihapus.'); muatDashboard();
+  }).catch(function (e) { pesan(e.message, true); });
+}
+
+/* ---------- Kategori skor ---------- */
+
+function gambarTabelKategori() {
+  var html = '<tr><th class="angka">Min</th><th class="angka">Maks</th><th>Label</th>' +
+             '<th>Deskripsi</th><th>Warna</th><th></th></tr>';
+  if (!APP.kategori.length) html += '<tr><td colspan="6" class="kosong">Belum ada kategori.</td></tr>';
+  APP.kategori.forEach(function (k, i) {
+    html += '<tr>' +
+      '<td><input type="number" class="kat" data-f="min" data-i="' + i + '" value="' + aman(k.min) + '"></td>' +
+      '<td><input type="number" class="kat" data-f="max" data-i="' + i + '" value="' + aman(k.max) + '"></td>' +
+      '<td><input type="text" class="kat" data-f="label" data-i="' + i + '" value="' + aman(k.label) + '"></td>' +
+      '<td><input type="text" class="kat" data-f="deskripsi" data-i="' + i + '" value="' + aman(k.deskripsi) + '"></td>' +
+      '<td><input type="color" class="kat" data-f="warna" data-i="' + i + '" value="' + aman(k.warna || '#888888') + '"></td>' +
+      '<td class="aksi"><button class="tombol bahaya tombol-kecil" onclick="hapusKategoriUI(' + i + ')">Hapus</button></td>' +
+      '</tr>';
+  });
+  el('tabelKategori').innerHTML = html;
+  el('tabelKategori').oninput = serapKategori;
+  el('tabelKategori').onchange = serapKategori;
+}
+
+function serapKategori() {
+  document.querySelectorAll('.kat').forEach(function (inp) {
+    APP.kategori[inp.dataset.i][inp.dataset.f] = inp.value;
+  });
+}
+
+function hapusKategoriUI(i) {
+  APP.kategori.splice(i, 1);
+  gambarTabelKategori();
+  pesan('Baris dihapus dari daftar. Klik "Simpan kategori" untuk menyimpannya.');
+}
+
+/* ---------- Benchmark ---------- */
+
+function isiPilihanBenchmark() {
+  el('bmItem').innerHTML = itemAktif().map(function (t) {
+    return '<option value="' + aman(t.kunci) + '">' + aman(t.nama) + ' — ' + aman(t.komponen) + '</option>';
+  }).join('');
+}
+
+function gambarTabelBenchmark() {
+  var html = '<tr><th>Item</th><th>Gender</th><th class="angka">Usia</th><th class="angka">Nilai</th>' +
+             '<th>Satuan</th><th>Arah</th><th>Aktif</th><th></th></tr>';
+  if (!APP.benchmark.length) html += '<tr><td colspan="8" class="kosong">Belum ada benchmark.</td></tr>';
+  APP.benchmark.forEach(function (b) {
+    html += '<tr><td>' + aman(b.nama_item) + '</td><td>' + aman(b.gender) + '</td>' +
+      '<td class="angka">' + aman(b.usia_min) + '–' + aman(b.usia_max) + '</td>' +
+      '<td class="angka">' + angka(b.nilai_bm) + '</td><td>' + aman(b.satuan) + '</td>' +
+      '<td>' + aman(b.arah) + '</td><td>' + aman(b.aktif) + '</td>' +
+      '<td class="aksi"><button class="tombol tombol-kecil" onclick="editBM(\'' + aman(b.id_bm) + '\')">Edit</button>' +
+      '<button class="tombol bahaya tombol-kecil" onclick="hapusBMUI(\'' + aman(b.id_bm) + '\')">Hapus</button></td></tr>';
+  });
+  el('tabelBM').innerHTML = html;
+}
+
+function editBM(id) {
+  var b = APP.benchmark.filter(function (x) { return String(x.id_bm) === id; })[0];
+  if (!b) return;
+  el('bmId').value = b.id_bm; el('bmItem').value = b.kunci; el('bmGender').value = b.gender;
+  el('bmMin').value = b.usia_min; el('bmMaks').value = b.usia_max;
+  el('bmNilai').value = b.nilai_bm; el('bmAktif').value = b.aktif;
+  window.scrollTo(0, el('hal-pengaturan').offsetTop);
+}
+
+function hapusBMUI(id) {
+  if (!confirm('Hapus baris benchmark ini?')) return;
+  panggil('hapusBenchmark', id).then(function (bm) {
+    APP.benchmark = bm; gambarTabelBenchmark(); pesan('Benchmark dihapus.'); muatDashboard();
+  }).catch(function (e) { pesan(e.message, true); });
+}
+
+function kosongkanFormBM() {
+  el('bmId').value = ''; el('bmNilai').value = '';
+}
+
+/* ---------- Pengguna ---------- */
+
+function gambarTabelPengguna() {
+  if (!adalahAdmin()) return;
+  var namaAtlet = {};
+  APP.atlet.forEach(function (a) { namaAtlet[a.id_atlet] = a.nama; });
+
+  var html = '<tr><th>Nama pengguna</th><th>Nama</th><th>Peran</th><th>Atlet tertaut</th><th>Aktif</th><th></th></tr>';
+  if (!APP.pengguna.length) html += '<tr><td colspan="6" class="kosong">Belum ada pengguna.</td></tr>';
+  APP.pengguna.forEach(function (u) {
+    html += '<tr><td>' + aman(u.username) + '</td><td>' + aman(u.nama) + '</td>' +
+      '<td>' + aman(u.peran) + '</td>' +
+      '<td>' + aman(u.id_atlet ? (namaAtlet[u.id_atlet] || u.id_atlet) : '–') + '</td>' +
+      '<td>' + aman(u.aktif) + '</td>' +
+      '<td class="aksi"><button class="tombol tombol-kecil" onclick="editPengguna(\'' + aman(u.username) + '\')">Edit</button>' +
+      '<button class="tombol bahaya tombol-kecil" onclick="hapusPenggunaUI(\'' + aman(u.username) + '\')">Hapus</button></td></tr>';
+  });
+  el('tabelPengguna').innerHTML = html;
+}
+
+function editPengguna(username) {
+  var u = APP.pengguna.filter(function (x) { return x.username === username; })[0];
+  if (!u) return;
+  el('usLama').value = u.username; el('usUser').value = u.username;
+  el('usNama').value = u.nama; el('usPeran').value = u.peran;
+  el('usAtlet').value = u.id_atlet || ''; el('usAktif').value = u.aktif;
+  el('usSandi').value = '';
+  pesan('Kosongkan kolom kata sandi bila tidak ingin menggantinya.');
+}
+
+function kosongkanFormPengguna() {
+  ['usLama','usUser','usNama','usSandi'].forEach(function (i) { el(i).value = ''; });
+  el('usPeran').value = 'Pelatih'; el('usAtlet').value = ''; el('usAktif').value = 'YA';
+}
+
+function hapusPenggunaUI(username) {
+  if (!confirm('Hapus pengguna "' + username + '"?')) return;
+  panggil('hapusPengguna', username).then(function (daftar) {
+    APP.pengguna = daftar; gambarTabelPengguna(); kosongkanFormPengguna(); pesan('Pengguna dihapus.');
+  }).catch(function (e) { pesan(e.message, true); });
+}
+
+/* ===========================================================
+   PEMASANGAN KEJADIAN
+   =========================================================== */
+
+function pasangFormulir() {
+
+  el('btnKeluar').addEventListener('click', function () {
+    panggil('keluar').catch(function () {}).then(function () { keluarPaksa('Anda telah keluar.'); });
+  });
+
+  el('btnGantiSandi').addEventListener('click', function () { el('tirai').hidden = false; });
+  el('btnTutupSandi').addEventListener('click', function () {
+    el('tirai').hidden = true;
+    ['gsLama','gsBaru','gsUlang'].forEach(function (i) { el(i).value = ''; });
+  });
+  el('btnKirimSandi').addEventListener('click', function () {
+    if (el('gsBaru').value !== el('gsUlang').value) return pesan('Ulangan kata sandi tidak cocok.', true);
+    if (el('gsBaru').value.length < 6) return pesan('Kata sandi baru minimal 6 karakter.', true);
+    panggil('gantiSandiSaya', el('gsLama').value, el('gsBaru').value).then(function () {
+      el('btnTutupSandi').click();
+      pesan('Kata sandi berhasil diganti.');
+    }).catch(function (e) { pesan(e.message, true); });
+  });
+
+  el('pilihAtlet').addEventListener('change', function () { muatDashboard(); });
+  el('pilihTes').addEventListener('change', function () { muatDashboard(this.value); });
+  el('pkAtlet').addEventListener('change', muatPerkembangan);
+  el('cariAtlet').addEventListener('input', gambarTabelAtlet);
+  document.querySelector('#navigasi button[data-hal="perkembangan"]')
+    .addEventListener('click', muatPerkembangan);
+
+  el('inAtlet').addEventListener('change', function () { kosongkanFormTes(); muatRiwayatTes(); });
+  el('btnTesBaru').addEventListener('click', kosongkanFormTes);
+
+  el('lpAtlet').addEventListener('change', function () { muatLaporan(); });
+  el('lpTes').addEventListener('change', function () { muatLaporan(this.value); });
+  el('btnCetakLaporan').addEventListener('click', function () { window.print(); });
+  document.querySelector('#navigasi button[data-hal="laporan"]')
+    .addEventListener('click', function () { if (el('lpAtlet').value) muatLaporan(); });
+
+  /* ---- Berkas ---- */
+  el('atFoto').addEventListener('change', function () {
+    bacaBerkas(this).then(function (f) {
+      APP.fotoAtlet = f;
+      if (f) el('atPratinjau').src = 'data:' + f.mimeType + ';base64,' + f.data;
+    }).catch(function (e) { pesan(e.message, true); el('atFoto').value = ''; });
+  });
+  el('btnHapusFoto').addEventListener('click', function () {
+    APP.fotoAtlet = null; el('atFoto').value = '';
+    pesan('Pilihan foto dibatalkan. Foto lama tetap dipakai.');
+  });
+  el('prBukti').addEventListener('change', function () {
+    bacaBerkas(this).then(function (f) { APP.fotoBukti = f; })
+      .catch(function (e) { pesan(e.message, true); el('prBukti').value = ''; });
+  });
+  el('stLogo').addEventListener('change', function () {
+    bacaBerkas(this).then(function (f) {
+      APP.fotoLogo = f;
+      if (f) el('stLogoPratinjau').src = 'data:' + f.mimeType + ';base64,' + f.data;
+    }).catch(function (e) { pesan(e.message, true); el('stLogo').value = ''; });
+  });
+  el('btnBatalLogo').addEventListener('click', function () {
+    APP.fotoLogo = null; el('stLogo').value = '';
+    el('stLogoPratinjau').src = APP.pengaturan.logo_url || '';
+    pesan('Pilihan logo dibatalkan.');
+  });
+  el('btnHapusLogo').addEventListener('click', function () {
+    if (!confirm('Hapus logo yang sedang dipakai?')) return;
+    panggil('simpanPengaturan', { hapus_logo: true }, null).then(function (p) {
+      APP.pengaturan = p; terapkanPengaturan(p); isiFormPengaturan(); pesan('Logo dihapus.');
+    }).catch(function (e) { pesan(e.message, true); });
+  });
+
+  /* ---- Atlet ---- */
+  el('atTanggal').addEventListener('change', function () {
+    var u = hitungUsiaKlien(this.value);
+    if (u === null) return;
+    var p = APP.pengaturan;
+    el('infoUsia').textContent = u < p.usia_min || u > p.usia_max
+      ? 'Usia ' + u + ' tahun di luar jangkauan ' + p.usia_min + '–' + p.usia_max + ' tahun.'
+      : 'Usia saat ini ' + u + ' tahun.';
+  });
+
+  el('btnSimpanAtlet').addEventListener('click', function () {
+    var u = hitungUsiaKlien(el('atTanggal').value);
+    if (u === null) return pesan('Tanggal lahir wajib diisi.', true);
+    if (u < APP.pengaturan.usia_min || u > APP.pengaturan.usia_max) {
+      return pesan('Usia ' + u + ' tahun di luar jangkauan ' +
+                   APP.pengaturan.usia_min + '–' + APP.pengaturan.usia_max + ' tahun.', true);
+    }
+    var data = {
+      id_atlet: el('atId').value, nama: el('atNama').value,
+      tempat_lahir: el('atTempat').value, tanggal_lahir: el('atTanggal').value,
+      gender: el('atGender').value, asal_daerah: el('atAsal').value,
+      tingkatan: el('atTingkat').value, status: el('atStatus').value,
+      tahun_bergabung: el('atTahun').value, catatan: el('atCatatan').value,
+      foto_id: (APP.atlet.filter(function (x) { return x.id_atlet === el('atId').value; })[0] || {}).foto_id || ''
+    };
+    var tombol = this; tombol.disabled = true;
+    panggil('simpanAtlet', data, APP.fotoAtlet).then(function () {
+      return panggil('getDaftarAtlet');
+    }).then(function (daftar) {
+      APP.atlet = daftar; isiPilihanAtlet(); gambarTabelAtlet(); gambarTabelPengguna();
+      kosongkanFormAtlet(); pesan('Data atlet tersimpan.');
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+
+  el('btnAtletBaru').addEventListener('click', kosongkanFormAtlet);
+
+  /* ---- Tes ---- */
+  el('btnPratinjau').addEventListener('click', function () {
+    panggil('pratinjauTes', kumpulkanTes()).then(gambarPratinjau)
+      .catch(function (e) { pesan(e.message, true); });
+  });
+
+  el('btnSimpanTes').addEventListener('click', function () {
+    var tombol = this; tombol.disabled = true;
+    panggil('simpanTes', kumpulkanTes()).then(function (r) {
+      gambarPratinjau(r.hasil);
+      pesan('Sesi tes tersimpan.');
+      resetFieldTes_();
+      muatRiwayatTes();
+      if (el('pilihAtlet').value === el('inAtlet').value) muatDashboard();
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+
+  /* ---- Prestasi ---- */
+  el('btnSimpanPrestasi').addEventListener('click', function () {
+    var lama = APP.prestasiSemua.filter(function (x) { return x.id_prestasi === el('prId').value; })[0];
+    var data = {
+      id_prestasi: el('prId').value, id_atlet: el('prAtlet').value,
+      nama_kejuaraan: el('prKejuaraan').value, tingkat: el('prTingkat').value,
+      tanggal: el('prTanggal').value, tempat: el('prTempat').value,
+      penyelenggara: el('prPenyelenggara').value, kategori: el('prKategori').value,
+      kelas: el('prKelas').value, medali: el('prMedali').value, catatan: el('prCatatan').value,
+      bukti_id: lama ? lama.bukti_id : ''
+    };
+    var tombol = this; tombol.disabled = true;
+    panggil('simpanPrestasi', data, APP.fotoBukti).then(function () {
+      muatPrestasi(); muatRekapMedaliAtlet(); kosongkanFormPrestasi(); pesan('Prestasi tersimpan.');
+      if (el('pilihAtlet').value === data.id_atlet) muatDashboard();
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+
+  el('btnPrestasiBaru').addEventListener('click', kosongkanFormPrestasi);
+
+  /* ---- Pengaturan: identitas ---- */
+  el('btnSimpanPengaturan').addEventListener('click', function () {
+    var obj = {
+      nama_aplikasi: el('stNama').value, subjudul: el('stSub').value,
+      nama_organisasi: el('stOrg').value, footer: el('stFooter').value,
+      warna_utama: el('stUtama').value, warna_sekunder: el('stSekunder').value,
+      warna_aksen: el('stAksen').value, warna_background: el('stBg').value,
+      usia_min: Number(el('stUsiaMin').value), usia_max: Number(el('stUsiaMaks').value)
+    };
+    var tombol = this; tombol.disabled = true;
+    panggil('simpanPengaturan', obj, APP.fotoLogo).then(function (p) {
+      APP.pengaturan = p; terapkanPengaturan(p); isiFormPengaturan();
+      pesan('Pengaturan tersimpan.');
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+
+  /* ---- Pengaturan: hak akses siswa ---- */
+  el('btnSimpanAkses').addEventListener('click', function () {
+    var pilih = Array.prototype.slice.call(document.querySelectorAll('.aks:checked'))
+      .map(function (c) { return c.value; });
+    var tombol = this; tombol.disabled = true;
+    panggil('simpanPengaturan', { akses_siswa: pilih.join(',') }, null).then(function (p) {
+      APP.pengaturan = p; gambarAksesSiswa();
+      pesan(pilih.length
+        ? 'Hak akses siswa tersimpan. Perubahan berlaku saat siswa masuk berikutnya.'
+        : 'Seluruh bagian ditutup untuk akun siswa.');
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+
+  /* ---- Pengaturan: cetak laporan ---- */
+  el('btnSimpanCetak').addEventListener('click', function () {
+    var pilih = Array.prototype.slice.call(document.querySelectorAll('.ctk:checked'))
+      .map(function (c) { return c.value; });
+    if (!pilih.length) return pesan('Pilih minimal satu bagian untuk dicetak.', true);
+    var obj = {
+      cetak_bagian: pilih.join(','),
+      cetak_bentuk_profil: el('stCetakBentukProfil').value,
+      cetak_bentuk_detail: el('stCetakBentukDetail').value,
+      cetak_orientasi: el('stCetakOrientasi').value,
+      cetak_ukuran: el('stCetakUkuran').value,
+      cetak_pisah_profil: el('stCetakPisahProfil').checked ? 'YA' : 'TIDAK',
+      cetak_pisah_prestasi: el('stCetakPisahPrestasi').checked ? 'YA' : 'TIDAK'
+    };
+    var tombol = this; tombol.disabled = true;
+    panggil('simpanPengaturan', obj, null).then(function (p) {
+      APP.pengaturan = p; terapkanGayaCetak(p); gambarCetakBagian(); isiFormCetak();
+      pesan('Pengaturan cetak tersimpan.');
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+
+  /* ---- Pengaturan: komponen ---- */
+  el('btnTambahKomponen').addEventListener('click', function () {
+    serapKomponen();
+    APP.komponen.push({ id_komponen: '', nama: '', bobot: 0, aktif: 'YA' });
+    gambarTabelKomponen();
+  });
+
+  el('btnSimpanKomponen').addEventListener('click', function () {
+    serapKomponen();
+    var tombol = this; tombol.disabled = true;
+    panggil('simpanKomponen', APP.komponen).then(function (daftar) {
+      APP.komponen = daftar;
+      gambarTabelKomponen(); gambarTabelItem(); isiPilihanBenchmark();
+      pesan('Komponen tersimpan.'); muatDashboard();
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+
+  /* ---- Pengaturan: item tes ---- */
+  el('btnTambahItem').addEventListener('click', function () {
+    serapItem();
+    var kmp = komponenAktif()[0];
+    if (!kmp) return pesan('Buat komponen terlebih dahulu.', true);
+    APP.itemTes.push({ id_item: '', kunci: '', nama: '', id_komponen: kmp.id_komponen,
+                       satuan: '', arah: 'HIGHER', aktif: 'YA' });
+    gambarTabelItem();
+  });
+
+  el('btnSimpanItem').addEventListener('click', function () {
+    serapItem();
+    var tombol = this; tombol.disabled = true;
+    panggil('simpanItemTes', APP.itemTes).then(function (daftar) {
+      APP.itemTes = daftar;
+      return panggil('getBenchmark');
+    }).then(function (bm) {
+      APP.benchmark = bm;
+      gambarTabelItem(); bangunIsianTes(); isiPilihanBenchmark(); gambarTabelBenchmark();
+      pesan('Item tes tersimpan.'); muatDashboard();
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+
+  /* ---- Pengaturan: kategori ---- */
+  el('btnTambahKategori').addEventListener('click', function () {
+    serapKategori();
+    APP.kategori.push({ min: 0, max: 0, label: '', deskripsi: '', warna: '#888888' });
+    gambarTabelKategori();
+  });
+
+  el('btnSimpanKategori').addEventListener('click', function () {
+    serapKategori();
+    panggil('simpanKategori', APP.kategori).then(function (k) {
+      APP.kategori = k; gambarTabelKategori(); pesan('Kategori skor tersimpan.'); muatDashboard();
+    }).catch(function (e) { pesan(e.message, true); });
+  });
+
+  /* ---- Pengaturan: benchmark ---- */
+  el('btnSimpanBM').addEventListener('click', function () {
+    var data = {
+      id_bm: el('bmId').value, kunci: el('bmItem').value,
+      gender: el('bmGender').value, usia_min: el('bmMin').value, usia_max: el('bmMaks').value,
+      nilai_bm: el('bmNilai').value, aktif: el('bmAktif').value
+    };
+    panggil('simpanBenchmark', data).then(function (bm) {
+      APP.benchmark = bm; gambarTabelBenchmark(); kosongkanFormBM();
+      pesan('Benchmark tersimpan.'); muatDashboard();
+    }).catch(function (e) { pesan(e.message, true); });
+  });
+
+  el('btnBMBaru').addEventListener('click', kosongkanFormBM);
+
+  /* ---- Pengaturan: pengguna ---- */
+  el('btnSimpanPengguna').addEventListener('click', function () {
+    var data = {
+      username_lama: el('usLama').value,
+      username: el('usUser').value.trim().toLowerCase(),
+      nama: el('usNama').value.trim(),
+      peran: el('usPeran').value,
+      id_atlet: el('usPeran').value === 'Siswa' ? el('usAtlet').value : '',
+      aktif: el('usAktif').value,
+      sandi: el('usSandi').value
+    };
+    var tombol = this; tombol.disabled = true;
+    panggil('simpanPengguna', data).then(function (daftar) {
+      APP.pengguna = daftar; gambarTabelPengguna(); kosongkanFormPengguna();
+      pesan('Pengguna tersimpan.');
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+
+  el('btnPenggunaBaru').addEventListener('click', kosongkanFormPengguna);
+}
+
+/* ===========================================================
+   KEUANGAN — iuran atlet (hanya Admin & Pelatih)
+   =========================================================== */
+
+APP.keu = { konfig: null, tarif: [], iuranData: [], iuranMeta: null,
+            bayarId: null, tagihanId: null, batalId: null };
+
+var NAMA_BULAN = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus',
+                  'September','Oktober','November','Desember'];
+
+function rp(n) {
+  n = Number(n) || 0;
+  return 'Rp ' + Math.round(n).toLocaleString('id-ID');
+}
+
+function namaBulan(p, pendek) {
+  if (!p) return '';
+  var x = String(p).split('-'), b = NAMA_BULAN[Number(x[1]) - 1] || '';
+  return (pendek ? b.slice(0, 3) : b) + ' ' + x[0];
+}
+
+function tglIndo(t) {
+  if (!t) return '';
+  var x = String(t).split('-');
+  return Number(x[2]) + ' ' + NAMA_BULAN[Number(x[1]) - 1].slice(0, 3) + ' ' + x[0];
+}
+
+/** Iuran bulanan ditulis "Oktober 2026"; biaya lain ditulis "Seragam (Okt 2026)". */
+function labelTagihan(periode, nama, pendek) {
+  return (!nama || nama === 'Iuran bulanan')
+    ? namaBulan(periode, pendek)
+    : nama + ' (' + namaBulan(periode, true) + ')';
+}
+
+function hariIni() {
+  var d = new Date();
+  return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+}
+
+function badgeStatus(s) {
+  var k = { Lunas: 'st-lunas', Sah: 'st-lunas', Sebagian: 'st-sebagian', Belum: 'st-belum', Batal: 'st-batal' }[s] || '';
+  return '<span class="badge ' + k + '">' + aman(s) + '</span>';
+}
+
+function siapkanKeuangan() {
+  if (!bolehUbah()) return;
+  panggil('getKonfigKeuangan').then(function (k) {
+    APP.keu.konfig = k;
+    APP.keu.tarif = k.tarif || [];
+
+    el('kasBulan').value = el('kasBulan').value || k.periode_sekarang;
+    el('iuBulan').value = el('iuBulan').value || k.periode_sekarang;
+    el('byMetode').innerHTML = k.metode.map(function (m) {
+      return '<option>' + aman(m) + '</option>';
+    }).join('');
+
+    var th = Number(k.periode_sekarang.slice(0, 4)), awal = Number(k.keuangan_mulai.slice(0, 4)), opsi = '';
+    for (var y = th; y >= Math.min(awal, th); y--) opsi += '<option value="' + y + '">' + y + '</option>';
+    el('kwLpTahun').innerHTML = opsi + '<option value="">Semua tahun</option>';
+
+    isiFormKeuangan();
+    gambarTabelTarif();
+    if (el('hal-keuangan').classList.contains('tampil')) muatSubKeuangan();
+  }).catch(function (e) { pesan(e.message, true); });
+}
+
+function subKeuanganAktif() {
+  var b = document.querySelector('#subtabKeuangan button.aktif');
+  return b ? b.dataset.sub : 'ringkasan';
+}
+
+function muatSubKeuangan() {
+  if (!APP.keu.konfig) return;
+  var s = subKeuanganAktif();
+  if (s === 'ringkasan') muatRingkasanKeu();
+  else if (s === 'kas') muatKas();
+  else if (s === 'iuran') muatIuran();
+  else muatRekapKeu();
+}
+
+/* ---------- Ringkasan ---------- */
+
+function muatRingkasanKeu() {
+  el('kwStat').innerHTML = '<p class="memuat" style="grid-column:1/-1">Memuat…</p>';
+  panggil('getRingkasanKeuangan', el('kwSertakan').checked).then(function (r) {
+    el('kwPeriodeLabel').textContent = namaBulan(r.periode);
+    var tb = r.tagihan_bulan_ini;
+    el('kwStat').innerHTML =
+      kartuStat(rp(r.diterima_bulan_ini), 'Diterima bulan ini') +
+      kartuStat(rp(tb.total_sisa), 'Belum terbayar bulan ini') +
+      kartuStat(rp(r.total_tunggakan), 'Total tunggakan') +
+      kartuStat(r.tunggakan.length + ' atlet', 'Atlet menunggak');
+
+    el('kwRincian').innerHTML =
+      '<p style="margin:0 0 6px"><b>Tagihan bulan ini:</b> ' + rp(tb.total_tagihan) +
+      ' · terbayar ' + rp(tb.total_terbayar) + ' · sisa ' + rp(tb.total_sisa) + '</p>' +
+      '<p style="margin:0 0 6px"><b>Status atlet:</b> Lunas ' + tb.lunas + ' · Sebagian ' + tb.sebagian +
+      ' · Belum ' + tb.belum + '</p>' +
+      '<p style="margin:0"><b>Penerimaan bulan ini per metode:</b> ' +
+      Object.keys(r.per_metode).map(function (m) { return aman(m) + ' ' + rp(r.per_metode[m]); }).join(' · ') + '</p>';
+
+    el('kwTunggakanInfo').textContent = r.sertakan_berjalan
+      ? 'Menghitung sisa tagihan sampai bulan berjalan.'
+      : 'Menghitung sisa tagihan bulan sebelum ' + namaBulan(r.periode) + '.';
+
+    var h = '<tr><th>Atlet</th><th>Tingkatan</th><th class="angka">Tagihan</th><th>Rincian</th>' +
+            '<th class="angka">Total</th><th></th></tr>';
+    if (!r.tunggakan.length) h += '<tr><td colspan="6" class="kosong">Tidak ada tunggakan. 🎉</td></tr>';
+    r.tunggakan.forEach(function (t) {
+      h += '<tr><td>' + aman(t.nama) + (t.status_atlet === 'Non-aktif' ? ' <small>(non-aktif)</small>' : '') + '</td>' +
+        '<td>' + aman(t.tingkatan || '–') + '</td>' +
+        '<td class="angka">' + t.jumlah_bulan + '</td>' +
+        '<td>' + t.item.map(function (x) { return aman(labelTagihan(x.periode, x.nama_biaya, true)); }).join(', ') + '</td>' +
+        '<td class="angka"><b>' + rp(t.total) + '</b></td>' +
+        '<td class="aksi"><button class="tombol kedua tombol-kecil" onclick="bukaRekapAtlet(\'' +
+        aman(t.id_atlet) + '\')">Rincian</button></td></tr>';
+    });
+    el('kwTabelTunggakan').innerHTML = h;
+
+    var a = '<tr><th>Bulan</th><th class="angka">Tagihan</th><th class="angka">Diterima</th><th style="min-width:120px">Diterima / tagihan</th></tr>';
+    r.arus.forEach(function (x) {
+      var pct = x.tagihan ? Math.min(100, Math.round(x.diterima / x.tagihan * 100)) : 0;
+      a += '<tr><td>' + aman(namaBulan(x.periode)) + '</td><td class="angka">' + rp(x.tagihan) +
+        '</td><td class="angka">' + rp(x.diterima) +
+        '</td><td><div class="bar"><i style="width:' + pct + '%"></i></div></td></tr>';
+    });
+    el('kwTabelArus').innerHTML = a;
+  }).catch(function (e) {
+    el('kwStat').innerHTML = '<p class="kosong" style="grid-column:1/-1">' + aman(e.message) + '</p>';
+  });
+}
+
+function bukaRekapAtlet(id) {
+  el('kwLpAtlet').value = id;
+  document.querySelector('#subtabKeuangan button[data-sub="laporan"]').click();
+}
+
+/* ---------- Kas ---------- */
+
+function muatKas() {
+  var semua = el('kasSemua').checked, bln = el('kasBulan').value;
+  el('kasBulan').disabled = semua;
+  if (!semua && !bln) return;
+  el('kasTabel').innerHTML = '<tr><td class="memuat">Memuat…</td></tr>';
+  panggil('getKas', bln, semua).then(function (k) {
+    el('kasStat').innerHTML =
+      kartuStat(rp(k.total), semua ? 'Total diterima' : 'Diterima ' + namaBulan(k.periode, true)) +
+      Object.keys(k.per_metode).map(function (m) { return kartuStat(rp(k.per_metode[m]), m); }).join('');
+
+    var h = '<tr><th>Tanggal</th><th>Atlet</th><th>Untuk</th><th class="angka">Jumlah</th>' +
+            '<th>Metode</th><th>Dicatat</th><th>Status</th><th></th></tr>';
+    if (!k.daftar.length) h += '<tr><td colspan="8" class="kosong">Belum ada pembayaran pada periode ini.</td></tr>';
+    k.daftar.forEach(function (b) {
+      var batal = b.status === 'Batal';
+      h += '<tr class="' + (batal ? 'batal' : '') + '">' +
+        '<td>' + aman(tglIndo(b.tanggal)) + '</td>' +
+        '<td>' + aman(b.nama_atlet) + (b.catatan ? '<br><small>' + aman(b.catatan) + '</small>' : '') + '</td>' +
+        '<td>' + aman(labelTagihan(b.periode_tagihan, b.nama_biaya, true)) + '</td>' +
+        '<td class="angka"><span class="coret">' + rp(b.jumlah) + '</span></td>' +
+        '<td>' + aman(b.metode) + '</td>' +
+        '<td><small>' + aman(b.dicatat_oleh) + '<br>' + aman(b.dicatat_pada) + '</small></td>' +
+        '<td>' + badgeStatus(b.status) +
+        (batal ? '<br><small>' + aman(b.dibatalkan_oleh) + ' · ' + aman(b.dibatalkan_pada) +
+                 '<br>Alasan: ' + aman(b.alasan_batal) + '</small>' : '') + '</td>' +
+        '<td class="aksi">' + (batal ? '' :
+          '<button class="tombol bahaya tombol-kecil" onclick="bukaBatal(\'' + aman(b.id_bayar) + '\',\'' +
+          aman(b.nama_atlet).replace(/'/g, '') + '\',' + b.jumlah + ')">Batalkan</button>') + '</td></tr>';
+    });
+    el('kasTabel').innerHTML = h;
+  }).catch(function (e) {
+    el('kasTabel').innerHTML = '<tr><td class="kosong">' + aman(e.message) + '</td></tr>';
+  });
+}
+
+function bukaBatal(id, nama, jumlah) {
+  APP.keu.batalId = id;
+  el('btInfo').textContent = 'Pembayaran ' + rp(jumlah) + ' dari ' + nama + ' akan dibatalkan. ' +
+    'Catatannya tetap tersimpan dan tagihan kembali berkurang terbayarnya.';
+  el('btAlasan').value = '';
+  el('tiraiBatal').hidden = false;
+}
+
+/* ---------- Iuran ---------- */
+
+function muatIuran() {
+  var b = el('iuBulan').value;
+  if (!b) return;
+  el('iuTabel').innerHTML = '<tr><td class="memuat">Memuat…</td></tr>';
+  panggil('getIuran', b).then(function (d) {
+    APP.keu.iuranData = d.daftar;
+    APP.keu.iuranMeta = d;
+    gambarIuran();
+  }).catch(function (e) {
+    el('iuTabel').innerHTML = '<tr><td class="kosong">' + aman(e.message) + '</td></tr>';
+  });
+}
+
+function gambarIuran() {
+  var d = APP.keu.iuranMeta; if (!d) return;
+  var r = d.ringkas, st = el('iuStatus').value, cari = el('iuCari').value.trim().toLowerCase();
+
+  el('iuStat').innerHTML =
+    kartuStat(rp(r.total_tagihan), 'Total tagihan') +
+    kartuStat(rp(r.total_terbayar), 'Terbayar') +
+    kartuStat(rp(r.total_sisa), 'Sisa') +
+    kartuStat(r.lunas + ' / ' + (r.lunas + r.sebagian + r.belum), 'Atlet lunas');
+
+  el('iuInfo').textContent = d.sebelum_mulai && !d.daftar.length
+    ? 'Bulan ini sebelum pembukuan dimulai (' + namaBulan(APP.keu.konfig.keuangan_mulai) +
+      '), jadi tagihannya tidak dibuat otomatis. Klik "Buat tagihan bulan terpilih" bila ingin menagihnya.'
+    : (d.dibuat ? d.dibuat + ' tagihan baru dibuat otomatis untuk atlet aktif.' : '');
+
+  var daftar = d.daftar.filter(function (t) {
+    if (st === 'BELUM_LUNAS' && t.status === 'Lunas') return false;
+    if (st && st !== 'BELUM_LUNAS' && t.status !== st) return false;
+    return !cari || t.nama_atlet.toLowerCase().indexOf(cari) >= 0;
+  });
+
+  var h = '<tr><th>Atlet</th><th>Biaya</th><th>Tingkatan</th><th class="angka">Tagihan</th><th class="angka">Terbayar</th>' +
+          '<th class="angka">Sisa</th><th>Status</th><th></th></tr>';
+  if (!daftar.length) h += '<tr><td colspan="8" class="kosong">Tidak ada tagihan yang cocok.</td></tr>';
+  daftar.forEach(function (t) {
+    h += '<tr class="' + (t.status === 'Belum' ? 'kurang' : '') + '"><td>' + aman(t.nama_atlet) +
+      (t.status_atlet === 'Non-aktif' ? ' <small>(non-aktif)</small>' : '') +
+      (t.catatan ? '<br><small>' + aman(t.catatan) + '</small>' : '') + '</td>' +
+      '<td>' + aman(t.nama_biaya) + '</td>' +
+      '<td>' + aman(t.tingkatan || '–') + '</td>' +
+      '<td class="angka">' + rp(t.nominal) + (t.sumber && t.sumber !== 'Default' ? '<br><small>' + aman(t.sumber) + '</small>' : '') + '</td>' +
+      '<td class="angka">' + rp(t.terbayar) + '</td>' +
+      '<td class="angka"><b>' + rp(t.sisa) + '</b></td>' +
+      '<td>' + badgeStatus(t.status) + '</td>' +
+      '<td class="aksi">' +
+        (t.sisa > 0 ? '<button class="tombol tombol-kecil" onclick="bukaBayar(\'' + aman(t.id_tagihan) + '\')">Bayar</button>' : '') +
+        '<button class="tombol kedua tombol-kecil" onclick="bukaUbahTagihan(\'' + aman(t.id_tagihan) + '\')">Ubah</button>' +
+      '</td></tr>';
+  });
+  el('iuTabel').innerHTML = h;
+}
+
+function tagihanDiIuran(id) {
+  return APP.keu.iuranData.filter(function (t) { return t.id_tagihan === id; })[0];
+}
+
+function bukaBiaya() {
+  el('bfNama').value = '';
+  el('bfNominal').value = '';
+  el('bfCatatan').value = '';
+  el('bfBulan').value = el('iuBulan').value || APP.keu.konfig.periode_sekarang;
+  document.querySelector('input[name="bfSasaran"][value="semua"]').checked = true;
+  el('bfDaftarWrap').hidden = true;
+  var aktif = APP.atlet.filter(function (a) { return a.status !== 'Non-aktif'; });
+  el('bfDaftar').innerHTML = aktif.length ? aktif.map(function (a) {
+    return '<label class="centang"><input type="checkbox" class="bfPilih" value="' + aman(a.id_atlet) + '"> ' + aman(a.nama) + '</label>';
+  }).join('') : '<p class="kosong">Belum ada atlet aktif.</p>';
+  el('tiraiBiaya').hidden = false;
+}
+
+function bukaBayar(id) {
+  var t = tagihanDiIuran(id); if (!t) return;
+  APP.keu.bayarId = id;
+  el('byInfo').innerHTML = '<b>' + aman(t.nama_atlet) + '</b> · ' + aman(labelTagihan(t.periode, t.nama_biaya)) +
+    '<br>Tagihan ' + rp(t.nominal) + ' · terbayar ' + rp(t.terbayar) + ' · sisa <b>' + rp(t.sisa) + '</b>';
+  el('byTanggal').value = hariIni();
+  el('byJumlah').value = t.sisa;
+  el('byJumlah').max = t.sisa;
+  el('byMetode').selectedIndex = 0;
+  el('byCatatan').value = '';
+  el('tiraiBayar').hidden = false;
+}
+
+function bukaUbahTagihan(id) {
+  var t = tagihanDiIuran(id); if (!t) return;
+  APP.keu.tagihanId = id;
+  el('tgInfo').innerHTML = '<b>' + aman(t.nama_atlet) + '</b> · ' + aman(labelTagihan(t.periode, t.nama_biaya)) +
+    '<br>Sudah dibayar ' + rp(t.terbayar) + ' (nominal tidak boleh di bawah ini).';
+  el('tgNamaWrap').hidden = !t.custom;
+  el('tgNama').value = t.custom ? t.nama_biaya : '';
+  el('tgNominal').value = t.nominal;
+  el('tgCatatan').value = t.catatan || '';
+  el('tiraiTagihan').hidden = false;
+}
+
+/* ---------- Rekap per atlet ---------- */
+
+function muatRekapKeu() {
+  var id = el('kwLpAtlet').value;
+  if (!id) { el('kwIsiLaporan').innerHTML = '<p class="kosong">Pilih atlet untuk melihat rekap.</p>'; return; }
+  el('kwIsiLaporan').innerHTML = '<p class="memuat">Memuat data…</p>';
+  panggil('getRekapAtlet', id, el('kwLpTahun').value).then(function (d) {
+    el('kwIsiLaporan').innerHTML = bangunRekapKeuHTML(d);
+  }).catch(function (e) {
+    el('kwIsiLaporan').innerHTML = '<p class="kosong">' + aman(e.message) + '</p>';
+  });
+}
+
+function bangunRekapKeuHTML(d) {
+  var org = APP.pengaturan.nama_organisasi || '';
+  var t = d.total;
+  var h = '<div class="kartu"><h3 style="margin:0 0 2px">Rekap Keuangan Atlet</h3>' +
+    '<p class="petunjuk" style="margin:0 0 12px">' + aman(org) + '</p>' +
+    '<div class="biodata"><dl>' +
+      '<dt>Nama</dt><dd>' + aman(d.atlet.nama) + '</dd>' +
+      '<dt>ID atlet</dt><dd>' + aman(d.atlet.id_atlet) + '</dd>' +
+      '<dt>Tingkatan</dt><dd>' + aman(d.atlet.tingkatan || '–') + '</dd>' +
+      '<dt>Status</dt><dd>' + aman(d.atlet.status) + '</dd>' +
+      '<dt>Periode</dt><dd>' + (d.tahun ? 'Tahun ' + aman(d.tahun) : 'Semua tahun') + '</dd>' +
+    '</dl></div></div>' +
+    '<div class="kartu grid k4">' +
+      kartuStat(rp(t.total_tagihan), 'Total tagihan') +
+      kartuStat(rp(t.total_terbayar), 'Total terbayar') +
+      kartuStat(rp(t.total_sisa), 'Sisa / tunggakan') +
+      kartuStat(t.lunas + ' lunas · ' + (t.sebagian + t.belum) + ' belum', 'Status bulan') +
+    '</div>';
+
+  h += '<div class="kartu"><h3 style="margin-top:0">Tagihan per bulan</h3><div class="tabelwrap"><table>' +
+    '<tr><th>Biaya</th><th class="angka">Tagihan</th><th class="angka">Terbayar</th><th class="angka">Sisa</th><th>Status</th></tr>';
+  if (!d.tagihan.length) h += '<tr><td colspan="5" class="kosong">Belum ada tagihan pada periode ini.</td></tr>';
+  d.tagihan.forEach(function (x) {
+    h += '<tr><td>' + aman(labelTagihan(x.periode, x.nama_biaya)) + '</td><td class="angka">' + rp(x.nominal) +
+      '</td><td class="angka">' + rp(x.terbayar) + '</td><td class="angka">' + rp(x.sisa) +
+      '</td><td>' + badgeStatus(x.status) + '</td></tr>';
+  });
+  h += '</table></div></div>';
+
+  h += '<div class="kartu"><h3 style="margin-top:0">Riwayat pembayaran</h3><div class="tabelwrap"><table>' +
+    '<tr><th>Tanggal</th><th>Untuk</th><th class="angka">Jumlah</th><th>Metode</th><th>Catatan</th></tr>';
+  if (!d.pembayaran.length) h += '<tr><td colspan="5" class="kosong">Belum ada pembayaran.</td></tr>';
+  d.pembayaran.forEach(function (x) {
+    h += '<tr><td>' + aman(tglIndo(x.tanggal)) + '</td><td>' + aman(labelTagihan(x.periode_tagihan, x.nama_biaya, true)) +
+      '</td><td class="angka">' + rp(x.jumlah) + '</td><td>' + aman(x.metode) +
+      '</td><td>' + aman(x.catatan) + '</td></tr>';
+  });
+  h += '</table></div><p class="petunjuk">Dicetak ' + aman(d.dicetak) + '. Pembayaran yang dibatalkan tidak dihitung.</p></div>';
+  return h;
+}
+
+/* ---------- Pengaturan keuangan (Admin) ---------- */
+
+function isiFormKeuangan() {
+  var k = APP.keu.konfig; if (!k) return;
+  el('kwStDefault').value = k.iuran_default;
+  el('kwStMulai').value = k.keuangan_mulai;
+}
+
+function opsiTingkatan_() {
+  var u = {};
+  APP.atlet.forEach(function (a) { if (a.tingkatan) u[a.tingkatan] = true; });
+  el('dlTingkatan').innerHTML = Object.keys(u).sort().map(function (t) {
+    return '<option value="' + aman(t) + '">';
+  }).join('');
+}
+
+function gambarTabelTarif() {
+  opsiTingkatan_();
+  var atletOpsi = '<option value="">— pilih atlet —</option>' + APP.atlet.map(function (a) {
+    return '<option value="' + aman(a.id_atlet) + '">' + aman(a.nama) + '</option>';
+  }).join('');
+
+  var h = '<tr><th>Jenis</th><th>Acuan</th><th class="angka">Nominal / bulan (Rp)</th><th>Keterangan</th><th>Aktif</th><th></th></tr>';
+  if (!APP.keu.tarif.length) h += '<tr><td colspan="6" class="kosong">Belum ada tarif khusus. Semua atlet memakai iuran default.</td></tr>';
+  APP.keu.tarif.forEach(function (t, i) {
+    var acuan = t.jenis === 'Atlet'
+      ? '<select class="trf" data-f="acuan" data-i="' + i + '">' +
+          atletOpsi.replace('value="' + aman(t.acuan) + '"', 'value="' + aman(t.acuan) + '" selected') + '</select>'
+      : '<input type="text" class="trf" data-f="acuan" data-i="' + i + '" list="dlTingkatan" placeholder="mis. Pemula" value="' + aman(t.acuan) + '">';
+    h += '<tr>' +
+      '<td><select class="trf" data-f="jenis" data-i="' + i + '">' +
+        '<option value="Tingkatan"' + (t.jenis === 'Tingkatan' ? ' selected' : '') + '>Tingkatan</option>' +
+        '<option value="Atlet"' + (t.jenis === 'Atlet' ? ' selected' : '') + '>Atlet khusus</option></select></td>' +
+      '<td>' + acuan + '</td>' +
+      '<td><input type="number" min="0" step="1000" class="trf" data-f="nominal" data-i="' + i + '" value="' + aman(t.nominal) + '"></td>' +
+      '<td><input type="text" class="trf" data-f="keterangan" data-i="' + i + '" placeholder="mis. beasiswa" value="' + aman(t.keterangan) + '"></td>' +
+      '<td><select class="trf" data-f="aktif" data-i="' + i + '">' +
+        '<option value="YA"' + (t.aktif !== 'TIDAK' ? ' selected' : '') + '>Ya</option>' +
+        '<option value="TIDAK"' + (t.aktif === 'TIDAK' ? ' selected' : '') + '>Tidak</option></select></td>' +
+      '<td class="aksi"><button class="tombol bahaya tombol-kecil" onclick="hapusTarifUI(' + i + ')">Hapus</button></td></tr>';
+  });
+  el('tabelTarif').innerHTML = h;
+  el('tabelTarif').oninput = serapTarif;
+  el('tabelTarif').onchange = function (e) {
+    serapTarif();
+    if (e.target.dataset && e.target.dataset.f === 'jenis') {
+      APP.keu.tarif[e.target.dataset.i].acuan = '';
+      gambarTabelTarif();
+    }
+  };
+}
+
+function serapTarif() {
+  document.querySelectorAll('.trf').forEach(function (inp) {
+    APP.keu.tarif[inp.dataset.i][inp.dataset.f] = inp.value;
+  });
+}
+
+function hapusTarifUI(i) {
+  serapTarif();
+  APP.keu.tarif.splice(i, 1);
+  gambarTabelTarif();
+  pesan('Baris dihapus dari daftar. Klik "Simpan tarif" untuk menyimpannya.');
+}
+
+/* ---------- Pemasangan pendengar (sekali saja) ---------- */
+
+function pasangKeuangan() {
+  el('subtabKeuangan').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    document.querySelectorAll('#subtabKeuangan button').forEach(function (x) { x.classList.remove('aktif'); });
+    b.classList.add('aktif');
+    document.querySelectorAll('#hal-keuangan .subpanel').forEach(function (p) { p.classList.remove('tampil'); });
+    el('kw-' + b.dataset.sub).classList.add('tampil');
+    muatSubKeuangan();
+  });
+  el('navKeuangan').addEventListener('click', muatSubKeuangan);
+
+  el('kwSertakan').addEventListener('change', muatRingkasanKeu);
+  el('kasBulan').addEventListener('change', muatKas);
+  el('kasSemua').addEventListener('change', muatKas);
+  el('iuBulan').addEventListener('change', muatIuran);
+  el('iuStatus').addEventListener('change', gambarIuran);
+  el('iuCari').addEventListener('input', gambarIuran);
+  el('kwLpAtlet').addEventListener('change', muatRekapKeu);
+  el('kwLpTahun').addEventListener('change', muatRekapKeu);
+  el('btnCetakRekap').addEventListener('click', function () { window.print(); });
+
+  el('btnBuatTagihan').addEventListener('click', function () {
+    var b = el('iuBulan').value; if (!b) return pesan('Pilih bulan tagihan.', true);
+    var tombol = this; tombol.disabled = true;
+    panggil('buatTagihan', b).then(function (r) {
+      pesan(r.dibuat ? r.dibuat + ' tagihan dibuat.' : 'Semua atlet aktif sudah punya tagihan untuk bulan ini.');
+      muatIuran();
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+
+  /* dialog: tagihan biaya lain */
+  el('btnBiayaLain').addEventListener('click', bukaBiaya);
+  el('btnTutupBiaya').addEventListener('click', function () { el('tiraiBiaya').hidden = true; });
+  document.querySelectorAll('input[name="bfSasaran"]').forEach(function (r) {
+    r.addEventListener('change', function () {
+      el('bfDaftarWrap').hidden = document.querySelector('input[name="bfSasaran"]:checked').value !== 'pilih';
+    });
+  });
+  el('btnKirimBiaya').addEventListener('click', function () {
+    var sasaran = document.querySelector('input[name="bfSasaran"]:checked').value;
+    var ids = Array.prototype.map.call(document.querySelectorAll('.bfPilih:checked'), function (c) { return c.value; });
+    if (!el('bfNama').value.trim()) return pesan('Nama biaya wajib diisi.', true);
+    if (!(Number(el('bfNominal').value) > 0)) return pesan('Nominal biaya harus lebih dari 0.', true);
+    if (sasaran === 'pilih' && !ids.length) return pesan('Pilih minimal satu atlet.', true);
+    var tombol = this; tombol.disabled = true;
+    panggil('buatBiayaCustom', {
+      nama_biaya: el('bfNama').value, nominal: el('bfNominal').value, periode: el('bfBulan').value,
+      sasaran: sasaran, id_atlet: ids, catatan: el('bfCatatan').value
+    }).then(function (r) {
+      el('tiraiBiaya').hidden = true;
+      pesan(r.dibuat + ' tagihan dibuat' + (r.dilewati ? ' (' + r.dilewati + ' dilewati karena sudah ada)' : '') + '.');
+      el('iuBulan').value = el('bfBulan').value;
+      muatIuran();
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+
+  /* dialog: catat pembayaran */
+  el('btnTutupBayar').addEventListener('click', function () { el('tiraiBayar').hidden = true; });
+  el('btnKirimBayar').addEventListener('click', function () {
+    var tombol = this; tombol.disabled = true;
+    panggil('simpanPembayaran', {
+      id_tagihan: APP.keu.bayarId, tanggal: el('byTanggal').value, jumlah: el('byJumlah').value,
+      metode: el('byMetode').value, catatan: el('byCatatan').value
+    }).then(function () {
+      el('tiraiBayar').hidden = true;
+      pesan('Pembayaran dicatat.');
+      muatIuran();
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+
+  /* dialog: ubah tagihan */
+  el('btnTutupTagihan').addEventListener('click', function () { el('tiraiTagihan').hidden = true; });
+  el('btnKirimTagihan').addEventListener('click', function () {
+    var tombol = this; tombol.disabled = true;
+    panggil('ubahTagihan', {
+      id_tagihan: APP.keu.tagihanId, nama_biaya: el('tgNama').value, nominal: el('tgNominal').value, catatan: el('tgCatatan').value
+    }).then(function () {
+      el('tiraiTagihan').hidden = true;
+      pesan('Tagihan diperbarui.');
+      muatIuran();
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+
+  /* dialog: batalkan pembayaran */
+  el('btnTutupBatal').addEventListener('click', function () { el('tiraiBatal').hidden = true; });
+  el('btnKirimBatal').addEventListener('click', function () {
+    if (!el('btAlasan').value.trim()) return pesan('Alasan pembatalan wajib diisi.', true);
+    var tombol = this; tombol.disabled = true;
+    panggil('batalkanPembayaran', APP.keu.batalId, el('btAlasan').value).then(function () {
+      el('tiraiBatal').hidden = true;
+      pesan('Pembayaran dibatalkan dan tetap tercatat di buku kas.');
+      muatKas();
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+
+  /* pengaturan keuangan */
+  el('btnSimpanKeu').addEventListener('click', function () {
+    var tombol = this; tombol.disabled = true;
+    panggil('simpanPengaturanKeuangan', {
+      iuran_default: el('kwStDefault').value, keuangan_mulai: el('kwStMulai').value
+    }).then(function (k) {
+      APP.keu.konfig = k; APP.keu.tarif = k.tarif || APP.keu.tarif;
+      isiFormKeuangan();
+      pesan('Pengaturan iuran tersimpan.');
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+
+  el('btnTambahTarif').addEventListener('click', function () {
+    serapTarif();
+    APP.keu.tarif.push({ id_tarif: '', jenis: 'Tingkatan', acuan: '', nominal: 0, keterangan: '', aktif: 'YA' });
+    gambarTabelTarif();
+  });
+
+  el('btnSimpanTarif').addEventListener('click', function () {
+    serapTarif();
+    var tombol = this; tombol.disabled = true;
+    panggil('simpanTarif', APP.keu.tarif).then(function (daftar) {
+      APP.keu.tarif = daftar; gambarTabelTarif();
+      pesan('Tarif tersimpan. Berlaku untuk tagihan yang dibuat berikutnya; tagihan lama tidak berubah.');
+    }).catch(function (e) { pesan(e.message, true); })
+      .then(function () { tombol.disabled = false; });
+  });
+}
+
+/* ===========================================================
+   STATUS SPP di Dashboard — Revisi 2
+   Kartu "SPP bulanan" tampil di Dashboard setiap atlet, juga untuk akun Siswa
+   (hanya atletnya sendiri). Kode lama tidak diubah; muatDashboard hanya
+   dibungkus agar kartu ikut dimuat setiap Dashboard dimuat.
+   =========================================================== */
+
+function muatSpp() {
+  var kartu = el('kartuSpp'), id = el('pilihAtlet').value;
+  if (!id) { kartu.hidden = true; return; }
+  var no = muatSpp._no = (muatSpp._no || 0) + 1;
+  kartu.hidden = false;
+  kartu.innerHTML = '<p class="memuat" style="padding:10px 0">Memuat status SPP…</p>';
+  panggil('getSppAtlet', id).then(function (d) {
+    if (no !== muatSpp._no) return;          // permintaan lama diabaikan
+    kartu.innerHTML = bangunSppHTML(d);
+  }).catch(function (e) {
+    if (no !== muatSpp._no) return;
+    kartu.innerHTML = '<h3 style="margin-top:0">SPP bulanan</h3><p class="kosong" style="padding:4px 0">' + aman(e.message) + '</p>';
+  });
+}
+
+function bangunSppHTML(d) {
+  var b = d.bulan_ini, t = d.tunggakan;
+  var h = '<h3 style="margin:0">SPP bulanan — ' + aman(d.atlet.nama) + '</h3>';
+
+  if (!b.ada) {
+    h += '<div class="spp-status"><b>' + aman(namaBulan(d.periode)) + '</b>' + badgeStatus('Tidak ada') + '</div>' +
+         '<p class="spp-info">Tagihan SPP bulan ini belum diterbitkan.</p>';
+  } else if (b.status === 'Lunas') {
+    h += '<div class="spp-status"><b>' + aman(namaBulan(d.periode)) + '</b>' + badgeStatus('Lunas') + '</div>' +
+         '<p class="spp-info">SPP bulan ini sudah dibayar (' + rp(b.nominal) + ').</p>';
+  } else if (b.status === 'Sebagian') {
+    h += '<div class="spp-status"><b>' + aman(namaBulan(d.periode)) + '</b>' + badgeStatus('Sebagian') + '</div>' +
+         '<p class="spp-info">Sudah dibayar ' + rp(b.terbayar) + ' dari ' + rp(b.nominal) +
+         '. Sisa <b>' + rp(b.sisa) + '</b>.</p>';
+  } else {
+    h += '<div class="spp-status"><b>' + aman(namaBulan(d.periode)) + '</b>' + badgeStatus('Belum') + '</div>' +
+         '<p class="spp-info">SPP bulan ini belum dibayar. Tagihan ' + rp(b.nominal) + '.</p>';
+  }
+
+  if (t.total > 0) {
+    h += '<p class="spp-awas">⚠️ Tunggakan SPP ' + rp(t.total) + ' (' + t.jumlah_bulan + ' bulan: ' +
+         t.bulan.map(function (x) { return aman(namaBulan(x, true)); }).join(', ') + ')</p>';
+  } else if (b.ada && b.status === 'Lunas') {
+    h += '<p class="spp-ok">✅ Tidak ada tunggakan SPP.</p>';
+  }
+
+  h += '<details><summary>Lihat riwayat ' + d.riwayat.length + ' bulan terakhir</summary><div class="tabelwrap"><table>' +
+       '<tr><th>Bulan</th><th class="angka">Tagihan</th><th class="angka">Terbayar</th><th>Status</th></tr>';
+  d.riwayat.forEach(function (x) {
+    h += '<tr><td>' + aman(namaBulan(x.periode)) + '</td>' +
+         '<td class="angka">' + (x.ada ? rp(x.nominal) : '–') + '</td>' +
+         '<td class="angka">' + (x.ada ? rp(x.terbayar) : '–') + '</td>' +
+         '<td>' + badgeStatus(x.status) + '</td></tr>';
+  });
+  h += '</table></div></details>';
+  return h;
+}
+
+/* Bungkus muatDashboard: perilaku lama utuh, lalu muat kartu SPP. */
+(function () {
+  var muatDashboardAsli = muatDashboard;
+  muatDashboard = function () {
+    var hasil = muatDashboardAsli.apply(this, arguments);
+    muatSpp();
+    return hasil;
+  };
+})();
+
+/* Segarkan saat menu Dashboard dibuka (mis. setelah ada pembayaran baru dicatat). */
+document.addEventListener('click', function (e) {
+  var b = e.target.closest ? e.target.closest('nav button[data-hal="dashboard"]') : null;
+  if (b && el('pilihAtlet').value) muatSpp();
+});
+
+/* ===========================================================
+   REVISI 3 — hapus permanen, biodata sendiri, ekspor & impor atlet
+   Kode lama tidak diubah. gambarTabelAtlet dan terapkanHakAkses hanya
+   dibungkus: perilaku aslinya tetap berjalan, lalu bagian baru ditambahkan.
+   =========================================================== */
+
+APP.fotoSaya = null;
+APP.imporData = null;
+APP.hapusAtletId = null;
+
+var KOLOM_FILE_ATLET = [
+  ['id_atlet', 'ID Atlet'], ['nama', 'Nama'], ['tempat_lahir', 'Tempat Lahir'],
+  ['tanggal_lahir', 'Tanggal Lahir'], ['gender', 'Gender'], ['asal_daerah', 'Asal Daerah'],
+  ['tingkatan', 'Tingkatan'], ['status', 'Status'], ['tahun_bergabung', 'Tahun Bergabung'],
+  ['catatan', 'Catatan']
+];
+
+var SINONIM_KOLOM_ATLET = {
+  idatlet: 'id_atlet', id: 'id_atlet', nama: 'nama', namaatlet: 'nama', namalengkap: 'nama',
+  tempatlahir: 'tempat_lahir', tempat: 'tempat_lahir',
+  tanggallahir: 'tanggal_lahir', tgllahir: 'tanggal_lahir',
+  gender: 'gender', jeniskelamin: 'gender', kelamin: 'gender',
+  asaldaerah: 'asal_daerah', asal: 'asal_daerah',
+  tingkatan: 'tingkatan', kelas: 'tingkatan', status: 'status',
+  tahunbergabung: 'tahun_bergabung', tahun: 'tahun_bergabung', catatan: 'catatan'
+};
+
+/* ---------- Hapus permanen ---------- */
+
+(function () {
+  var gambarTabelAtletAsli = gambarTabelAtlet;
+  gambarTabelAtlet = function () {
+    gambarTabelAtletAsli.apply(this, arguments);
+    if (!adalahAdmin()) return;
+    document.querySelectorAll('#tabelAtlet tr').forEach(function (tr) {
+      var td = tr.querySelector('td.aksi');
+      if (!td) return;
+      var id = tr.cells[0].textContent.trim();
+      td.insertAdjacentHTML('beforeend',
+        '<button class="tombol bahaya tombol-kecil" onclick="mintaHapusPermanen(\'' + aman(id) + '\')">Hapus permanen</button>');
+    });
+  };
+})();
+
+function mintaHapusPermanen(id) {
+  var a = APP.atlet.filter(function (x) { return x.id_atlet === id; })[0];
+  if (!a) return;
+  if (!confirm('Hapus PERMANEN "' + a.nama + '"?\n\nSeluruh data tes, prestasi, tagihan, dan pembayarannya ikut terhapus dan tidak bisa dikembalikan.\n\nUntuk sekadar menonaktifkan, pilih tombol "Non-aktifkan".')) return;
+  APP.hapusAtletId = id;
+  el('hpInfo').innerHTML = 'Anda akan menghapus <b>' + aman(a.nama) + '</b> (' + aman(a.id_atlet) + ') beserta seluruh data tes, prestasi, tagihan, dan pembayarannya. ' +
+    'Akun siswa yang tertaut dinonaktifkan. Tindakan ini tidak dapat dibatalkan.';
+  el('hpKetik').value = '';
+  el('btnHapusPermanenKirim').disabled = true;
+  el('tiraiHapusAtlet').hidden = false;
+  el('hpKetik').focus();
+}
+
+function jalankanHapusPermanen() {
+  var tombol = el('btnHapusPermanenKirim');
+  tombol.disabled = true;
+  panggil('hapusAtletPermanen', APP.hapusAtletId, el('hpKetik').value).then(function (r) {
+    el('tiraiHapusAtlet').hidden = true;
+    var x = r.ringkas;
+    pesan('"' + r.nama + '" dihapus permanen (tes ' + x.tes + ', prestasi ' + x.prestasi +
+          ', tagihan ' + x.tagihan + ', pembayaran ' + x.pembayaran + ').');
+    return panggil('getDaftarAtlet');
+  }).then(function (daftar) {
+    APP.atlet = daftar;
+    isiPilihanAtlet(); gambarTabelAtlet(); kosongkanFormAtlet();
+    if (adalahAdmin()) {
+      panggil('getPengguna').then(function (p) { APP.pengguna = p; gambarTabelPengguna(); });
+    }
+    try { muatDashboard(); } catch (e) {}
+    try { muatPrestasi(); } catch (e) {}
+  }).catch(function (e) { pesan(e.message, true); tombol.disabled = false; });
+}
+
+/* ---------- Biodata saya (siswa) ---------- */
+
+function biodataSayaAktif() {
+  return APP.sesi.peran === 'Siswa' && !!APP.sesi.id_atlet &&
+         String(APP.pengaturan.siswa_edit_biodata || 'YA').toUpperCase() !== 'TIDAK';
+}
+
+function atletSaya() {
+  return APP.atlet.filter(function (a) { return a.id_atlet === APP.sesi.id_atlet; })[0] || null;
+}
+
+function isiBiodataSaya() {
+  var a = atletSaya();
+  if (!a) { el('kartuBiodataSaya').hidden = true; return; }
+  el('bsNama').value = a.nama || '';
+  el('bsTempat').value = a.tempat_lahir || '';
+  el('bsAsal').value = a.asal_daerah || '';
+  el('bsKunci').value = (a.tanggal_lahir || '–') + ' · ' + (a.gender || '–');
+  if (a.foto_url) el('bsPratinjau').src = a.foto_url; else el('bsPratinjau').removeAttribute('src');
+  el('bsFoto').value = ''; APP.fotoSaya = null;
+}
+
+function terapkanBiodataSaya() {
+  var siswa = APP.sesi.peran === 'Siswa';
+  var aktif = biodataSayaAktif();
+
+  el('kartuBiodataSaya').hidden = !aktif;
+  el('kartuEksporSaya').hidden = !(siswa && !!APP.sesi.id_atlet);
+  el('kartuImporEkspor').hidden = !bolehUbah();
+
+  if (siswa && aktif) {
+    var nav = document.querySelector('nav button[data-hal="atlet"]');
+    if (nav) nav.style.display = '';     // siswa perlu halaman ini untuk memperbaiki biodata
+    isiBiodataSaya();
+  }
+  if (adalahAdmin()) {
+    el('stSiswaEdit').checked = String(APP.pengaturan.siswa_edit_biodata || 'YA').toUpperCase() !== 'TIDAK';
+  }
+}
+
+(function () {
+  var terapkanHakAksesAsli = terapkanHakAkses;
+  terapkanHakAkses = function () {
+    terapkanHakAksesAsli.apply(this, arguments);
+    terapkanBiodataSaya();
+  };
+})();
+
+function simpanBiodataSayaKlien(tombol) {
+  tombol.disabled = true;
+  panggil('simpanBiodataSaya', {
+    nama: el('bsNama').value, tempat_lahir: el('bsTempat').value, asal_daerah: el('bsAsal').value
+  }, APP.fotoSaya).then(function () {
+    return panggil('getDaftarAtlet');
+  }).then(function (daftar) {
+    APP.atlet = daftar;
+    isiPilihanAtlet(); gambarTabelAtlet(); isiBiodataSaya();
+    try { muatDashboard(); } catch (e) {}
+    pesan('Biodata tersimpan.');
+  }).catch(function (e) { pesan(e.message, true); })
+    .then(function () { tombol.disabled = false; });
+}
+
+/* ---------- Ekspor ---------- */
+
+function csvSel(v) {
+  v = (v === null || v === undefined) ? '' : String(v);
+  return /[";\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+}
+
+function unduhBlob(nama, blob) {
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = nama;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+}
+
+/** CSV memakai titik koma dan BOM agar langsung terbaca benar di Excel Indonesia. */
+function unduhCSV(nama, aoa) {
+  var teks = '\ufeff' + aoa.map(function (r) { return r.map(csvSel).join(';'); }).join('\r\n');
+  unduhBlob(nama, new Blob([teks], { type: 'text/csv;charset=utf-8' }));
+}
+
+function unduhXLSX(nama, lembar) {
+  if (typeof XLSX === 'undefined') {
+    pesan('Pustaka Excel belum termuat. Muat ulang halaman, atau gunakan CSV.', true);
+    return;
+  }
+  var wb = XLSX.utils.book_new();
+  lembar.forEach(function (l) {
+    var ws = XLSX.utils.aoa_to_sheet(l.aoa);
+    ws['!cols'] = (l.lebar || []).map(function (w) { return { wch: w }; });
+    XLSX.utils.book_append_sheet(wb, ws, l.nama);
+  });
+  var buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  unduhBlob(nama, new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+}
+
+function stempelTanggal() {
+  var d = new Date();
+  return d.getFullYear() + ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2);
+}
+
+/** Siswa hanya mengekspor atletnya sendiri dan tanpa catatan pelatih. */
+function susunEkspor(untukSiswa) {
+  var kolom = KOLOM_FILE_ATLET.filter(function (k) { return !(untukSiswa && k[0] === 'catatan'); });
+  var sumber = APP.atlet.filter(function (a) { return !untukSiswa || a.id_atlet === APP.sesi.id_atlet; });
+  var aoa = [kolom.map(function (k) { return k[1]; })];
+  sumber.forEach(function (a) {
+    aoa.push(kolom.map(function (k) {
+      var v = a[k[0]];
+      return (v === undefined || v === null) ? '' : v;
+    }));
+  });
+  return aoa;
+}
+
+function eksporAtlet(format, untukSiswa) {
+  var aoa = susunEkspor(untukSiswa);
+  if (aoa.length < 2) return pesan('Tidak ada data untuk diekspor.', true);
+  var nama = (untukSiswa ? 'data-saya-' : 'data-atlet-') + stempelTanggal();
+  if (format === 'csv') unduhCSV(nama + '.csv', aoa);
+  else unduhXLSX(nama + '.xlsx', [{ nama: 'Atlet', aoa: aoa, lebar: [10, 26, 16, 14, 12, 20, 18, 10, 16, 28] }]);
+}
+
+function unduhTemplat(format) {
+  var contoh = ['', 'CONTOH — hapus baris ini', 'Batam', '2012-05-20', 'Laki-laki', 'Batam, Kepri', 'Melati 1', 'Aktif', new Date().getFullYear(), ''];
+  var aoa = [KOLOM_FILE_ATLET.map(function (k) { return k[1]; }), contoh];
+  if (format === 'csv') return unduhCSV('templat-impor-atlet.csv', aoa);
+  var petunjuk = [
+    ['Petunjuk pengisian'],
+    ['1. Isi data mulai baris ke-2 pada lembar "Atlet". Hapus baris CONTOH (baris yang bernama "CONTOH — hapus baris ini" juga otomatis dilewati).'],
+    ['2. Kolom wajib: Nama dan Tanggal Lahir. Gender wajib untuk atlet baru.'],
+    ['3. Tanggal Lahir ditulis tahun-bulan-tanggal, mis. 2012-05-20 (format 20/05/2012 juga dikenali).'],
+    ['4. Gender: Laki-laki atau Perempuan (L / P juga dikenali). Status: Aktif atau Non-aktif; kosong = Aktif.'],
+    ['5. ID Atlet dikosongkan untuk atlet baru. Bila diisi dan cocok dengan data yang ada, atlet itu diperbarui.'],
+    ['6. Atlet dengan nama dan tanggal lahir yang sama dengan data yang ada juga diperbarui. Sel kosong tidak menghapus data lama.'],
+    ['7. Foto tidak dapat diimpor; unggah lewat formulir atlet.']
+  ];
+  unduhXLSX('templat-impor-atlet.xlsx', [
+    { nama: 'Atlet', aoa: aoa, lebar: [10, 26, 16, 14, 12, 20, 18, 10, 16, 28] },
+    { nama: 'Petunjuk', aoa: petunjuk, lebar: [120] }
+  ]);
+}
+
+/* ---------- Impor ---------- */
+
+function parseCSV(teks) {
+  teks = String(teks).replace(/^\ufeff/, '');
+  var baris1 = teks.split(/\r?\n/)[0] || '';
+  var pemisah = [';', ',', '\t'].map(function (p) { return [p, baris1.split(p).length]; })
+    .sort(function (a, b) { return b[1] - a[1]; })[0][0];
+  var hasil = [], sel = '', baris = [], kutip = false;
+  for (var i = 0; i < teks.length; i++) {
+    var c = teks.charAt(i);
+    if (kutip) {
+      if (c === '"') {
+        if (teks.charAt(i + 1) === '"') { sel += '"'; i++; } else kutip = false;
+      } else sel += c;
+    } else if (c === '"') kutip = true;
+    else if (c === pemisah) { baris.push(sel); sel = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && teks.charAt(i + 1) === '\n') i++;
+      baris.push(sel); sel = ''; hasil.push(baris); baris = [];
+    } else sel += c;
+  }
+  if (sel !== '' || baris.length) { baris.push(sel); hasil.push(baris); }
+  return hasil;
+}
+
+function bacaTabelBerkas(f) {
+  return new Promise(function (ok, gagal) {
+    if (f.size > 5 * 1024 * 1024) return gagal(new Error('Ukuran berkas melebihi 5 MB.'));
+    var ext = (f.name.split('.').pop() || '').toLowerCase();
+    var r = new FileReader();
+    r.onerror = function () { gagal(new Error('Berkas gagal dibaca.')); };
+    if (ext === 'xlsx' || ext === 'xls') {
+      if (typeof XLSX === 'undefined') return gagal(new Error('Pustaka Excel belum termuat. Muat ulang halaman, atau simpan berkas sebagai CSV.'));
+      r.onload = function () {
+        try {
+          var wb = XLSX.read(r.result, { type: 'array' });
+          var ws = wb.Sheets[wb.SheetNames[0]];
+          ok(XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' }));
+        } catch (e) { gagal(new Error('Berkas Excel tidak dapat dibaca: ' + e.message)); }
+      };
+      r.readAsArrayBuffer(f);
+    } else if (ext === 'csv' || ext === 'txt') {
+      r.onload = function () { ok(parseCSV(r.result)); };
+      r.readAsText(f, 'UTF-8');
+    } else {
+      gagal(new Error('Format berkas harus .xlsx atau .csv.'));
+    }
+  });
+}
+
+/** Angka serial Excel, teks yyyy-mm-dd, atau dd/mm/yyyy menjadi yyyy-mm-dd. */
+function normTanggalImpor(v) {
+  if (v === '' || v === null || v === undefined) return '';
+  var p2 = function (n) { return ('0' + n).slice(-2); };
+  if (typeof v === 'number') {
+    var d = new Date(Math.round((v - 25569) * 86400000));
+    return d.getUTCFullYear() + '-' + p2(d.getUTCMonth() + 1) + '-' + p2(d.getUTCDate());
+  }
+  var s = String(v).trim(), m;
+  if ((m = /^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/.exec(s))) return m[1] + '-' + p2(m[2]) + '-' + p2(m[3]);
+  if ((m = /^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/.exec(s))) return m[3] + '-' + p2(m[2]) + '-' + p2(m[1]);
+  return s;
+}
+
+function tabelKeBarisAtlet(tabel) {
+  if (!tabel || !tabel.length) throw new Error('Berkas kosong.');
+  var kolom = tabel[0].map(function (x) {
+    return SINONIM_KOLOM_ATLET[String(x).toLowerCase().replace(/[^a-z0-9]/g, '')] || null;
+  });
+  if (kolom.indexOf('nama') < 0 || kolom.indexOf('tanggal_lahir') < 0) {
+    throw new Error('Baris pertama berkas harus berisi judul kolom, minimal "Nama" dan "Tanggal Lahir". Gunakan templat.');
+  }
+  var hasil = [];
+  for (var i = 1; i < tabel.length; i++) {
+    var r = tabel[i], o = { baris: i + 1 }, kosong = true;
+    for (var j = 0; j < kolom.length; j++) {
+      if (!kolom[j]) continue;
+      var v = r[j];
+      if (v === undefined || v === null) v = '';
+      if (String(v).trim() !== '') kosong = false;
+      o[kolom[j]] = (typeof v === 'string') ? v.trim() : v;
+    }
+    if (kosong) continue;
+    if (String(o.nama || '').indexOf('CONTOH —') === 0) continue;
+    o.tanggal_lahir = normTanggalImpor(o.tanggal_lahir);
+    hasil.push(o);
+  }
+  if (!hasil.length) throw new Error('Tidak ada baris data yang dapat diimpor.');
+  return hasil;
+}
+
+function hasilImporHTML(r) {
+  var h = '<div class="kartu grid k4" style="margin-top:14px">' +
+    kartuStat(r.dibuat, 'Atlet baru') + kartuStat(r.diperbarui, 'Diperbarui') +
+    kartuStat(r.tanpa_perubahan, 'Tanpa perubahan') + kartuStat(r.jumlah_gagal, 'Baris gagal') + '</div>';
+  if (r.gagal.length) {
+    h += '<div class="tabelwrap"><table><tr><th class="angka">Baris</th><th>Nama</th><th>Masalah</th></tr>';
+    r.gagal.forEach(function (g) {
+      h += '<tr><td class="angka">' + aman(g.baris) + '</td><td>' + aman(g.nama || '–') + '</td><td>' + aman(g.pesan) + '</td></tr>';
+    });
+    h += '</table></div>';
+    if (r.jumlah_gagal > r.gagal.length) h += '<p class="petunjuk">Hanya ' + r.gagal.length + ' baris pertama yang ditampilkan.</p>';
+    h += '<p class="petunjuk">Baris yang gagal tidak disimpan. Perbaiki di berkas lalu impor ulang; baris yang sudah berhasil akan tercatat sebagai "tanpa perubahan".</p>';
+  }
+  return h;
+}
+
+function pilihBerkasImpor(input) {
+  APP.imporData = null;
+  el('btnImporProses').disabled = true;
+  el('imporHasil').innerHTML = '';
+  var f = input.files && input.files[0];
+  if (!f) { el('imporInfo').textContent = ''; return; }
+  el('imporInfo').textContent = 'Membaca berkas…';
+  bacaTabelBerkas(f).then(function (tabel) {
+    APP.imporData = tabelKeBarisAtlet(tabel);
+    el('imporInfo').textContent = APP.imporData.length + ' baris data terbaca dari "' + f.name + '". Klik "Impor sekarang" untuk menyimpan.';
+    el('btnImporProses').disabled = false;
+  }).catch(function (e) {
+    el('imporInfo').textContent = '';
+    input.value = '';
+    pesan(e.message, true);
+  });
+}
+
+function prosesImpor(tombol) {
+  if (!APP.imporData || !APP.imporData.length) return pesan('Pilih berkas terlebih dahulu.', true);
+  tombol.disabled = true;
+  el('imporHasil').innerHTML = '<p class="memuat">Memproses…</p>';
+  panggil('imporAtlet', APP.imporData).then(function (r) {
+    el('imporHasil').innerHTML = hasilImporHTML(r);
+    APP.imporData = null; el('imporFile').value = ''; el('imporInfo').textContent = '';
+    return panggil('getDaftarAtlet');
+  }).then(function (daftar) {
+    APP.atlet = daftar; isiPilihanAtlet(); gambarTabelAtlet();
+    pesan('Impor selesai.');
+  }).catch(function (e) {
+    el('imporHasil').innerHTML = '';
+    pesan(e.message, true);
+    tombol.disabled = false;
+  });
+}
+
+/* ---------- Pendengar (delegasi: tidak bergantung pada urutan pemasangan) ---------- */
+
+document.addEventListener('click', function (e) {
+  var t = e.target.closest ? e.target.closest('button') : null;
+  if (!t || !t.id) return;
+  switch (t.id) {
+    case 'btnHapusPermanenKirim': jalankanHapusPermanen(); break;
+    case 'btnHapusPermanenBatal': el('tiraiHapusAtlet').hidden = true; break;
+    case 'btnSimpanBiodataSaya': simpanBiodataSayaKlien(t); break;
+    case 'btnEksporXlsx': eksporAtlet('xlsx', false); break;
+    case 'btnEksporCsv': eksporAtlet('csv', false); break;
+    case 'btnEksporSayaXlsx': eksporAtlet('xlsx', true); break;
+    case 'btnEksporSayaCsv': eksporAtlet('csv', true); break;
+    case 'btnTemplatXlsx': unduhTemplat('xlsx'); break;
+    case 'btnTemplatCsv': unduhTemplat('csv'); break;
+    case 'btnImporProses': prosesImpor(t); break;
+    case 'btnSimpanSiswaEdit':
+      t.disabled = true;
+      panggil('simpanSiswaEditBiodata', el('stSiswaEdit').checked ? 'YA' : 'TIDAK').then(function (v) {
+        APP.pengaturan.siswa_edit_biodata = v;
+        pesan(v === 'YA' ? 'Siswa kini dapat memperbaiki biodatanya.' : 'Perubahan biodata oleh siswa dimatikan.');
+      }).catch(function (err) { pesan(err.message, true); })
+        .then(function () { t.disabled = false; });
+      break;
+  }
+});
+
+document.addEventListener('input', function (e) {
+  if (e.target && e.target.id === 'hpKetik') {
+    var a = APP.atlet.filter(function (x) { return x.id_atlet === APP.hapusAtletId; })[0];
+    el('btnHapusPermanenKirim').disabled = !a ||
+      e.target.value.trim().toLowerCase() !== String(a.nama).trim().toLowerCase();
+  }
+});
+
+document.addEventListener('change', function (e) {
+  if (!e.target) return;
+  if (e.target.id === 'imporFile') pilihBerkasImpor(e.target);
+  if (e.target.id === 'bsFoto') {
+    bacaBerkas(e.target).then(function (f) {
+      APP.fotoSaya = f;
+      if (f) el('bsPratinjau').src = 'data:' + f.mimeType + ';base64,' + f.data;
+    }).catch(function (err) { pesan(err.message, true); e.target.value = ''; });
+  }
+});
+
+/* ===========================================================
+   PRESTASI OLEH SISWA — pengajuan, edit, dan verifikasi
+   Kode lama tidak diubah. terapkanHakAkses hanya dibungkus.
+   Prestasi siswa masuk DB_PRESTASI hanya setelah disetujui, sehingga
+   rekap medali, statistik, dashboard, dan laporan yang ada tetap benar.
+   =========================================================== */
+
+APP.buktiUsulan = null;
+APP.usulanSaya = [];
+APP.usulanStaff = [];
+APP.tolakId = null;
+
+function badgeUsulan(s) {
+  var k = { Menunggu: 'st-sebagian', Disetujui: 'st-lunas', Ditolak: 'st-belum' }[s] || '';
+  return '<span class="badge ' + k + '">' + aman(s) + '</span>';
+}
+
+function siswaTertaut() { return APP.sesi.peran === 'Siswa' && !!APP.sesi.id_atlet; }
+
+function setLencanaUsulan(n) {
+  var l = el('lencanaUsulan');
+  if (!l) {
+    el('navPrestasi').insertAdjacentHTML('beforeend', ' <span id="lencanaUsulan" class="badge st-belum" hidden>0</span>');
+    l = el('lencanaUsulan');
+  }
+  l.textContent = n;
+  l.hidden = !(bolehUbah() && n > 0);
+}
+
+function terapkanUsulanPrestasi() {
+  var tertaut = siswaTertaut(), staf = bolehUbah();
+  var sec = el('hal-prestasi');
+
+  el('kartuUsulanSiswa').hidden = !tertaut;
+  el('kartuUsulanSaya').hidden = !tertaut;
+  el('kartuVerifikasi').hidden = !staf;
+
+  if (tertaut) {
+    el('navPrestasi').style.display = '';          // fitur selalu aktif untuk siswa tertaut
+    // Pindahkan ke atas halaman agar langsung terlihat (kode lama memilih elemen prestasi lewat id, bukan urutan).
+    sec.insertBefore(el('kartuUsulanSiswa'), sec.firstChild);
+    sec.insertBefore(el('kartuUsulanSaya'), el('kartuUsulanSiswa').nextSibling);
+    var a = APP.atlet.filter(function (x) { return x.id_atlet === APP.sesi.id_atlet; })[0];
+    el('psNamaAtlet').value = a ? a.nama : '';
+    muatUsulanSaya();
+  }
+  if (staf) {
+    sec.insertBefore(el('kartuVerifikasi'), sec.firstChild);
+    setLencanaUsulan(0);
+    muatVerifikasi();
+  }
+}
+
+(function () {
+  var terapkanHakAksesSebelumnya = terapkanHakAkses;
+  terapkanHakAkses = function () {
+    terapkanHakAksesSebelumnya.apply(this, arguments);
+    terapkanUsulanPrestasi();
+  };
+})();
+
+/* ---------- Siswa ---------- */
+
+function muatUsulanSaya() {
+  panggil('getUsulanSaya').then(function (d) {
+    APP.usulanSaya = d;
+    gambarUsulanSaya();
+  }).catch(function (e) {
+    el('tabelUsulanSaya').innerHTML = '<tr><td class="kosong">' + aman(e.message) + '</td></tr>';
+  });
+}
+
+function gambarUsulanSaya() {
+  var h = '<tr><th>Diajukan</th><th>Kejuaraan</th><th>Tingkat</th><th>Medali</th><th>Status</th><th></th></tr>';
+  if (!APP.usulanSaya.length) h += '<tr><td colspan="6" class="kosong">Belum ada pengajuan. Isi formulir di atas untuk mengajukan prestasi.</td></tr>';
+  APP.usulanSaya.forEach(function (p) {
+    var bisaEdit = p.status !== 'Disetujui';
+    h += '<tr><td>' + aman((p.diajukan_pada || '').slice(0, 10)) + '</td>' +
+      '<td>' + aman(p.nama_kejuaraan) + (p.tanggal ? '<br><small>' + aman(p.tanggal) + '</small>' : '') + '</td>' +
+      '<td>' + aman(p.tingkat) + '</td><td>' + aman(p.medali) + '</td>' +
+      '<td>' + badgeUsulan(p.status) +
+        (p.status === 'Ditolak' && p.alasan_tolak ? '<br><small>Alasan: ' + aman(p.alasan_tolak) + '</small>' : '') +
+        (p.status === 'Disetujui' ? '<br><small>Sudah masuk rekap resmi</small>' : '') + '</td>' +
+      '<td class="aksi">' + (p.bukti_url ? '<a href="' + aman(p.bukti_url) + '" target="_blank" rel="noopener">bukti</a> ' : '') +
+        (bisaEdit ? '<button class="tombol tombol-kecil" onclick="editUsulanSaya(\'' + aman(p.id_usulan) + '\')">Edit</button>' : '') +
+      '</td></tr>';
+  });
+  el('tabelUsulanSaya').innerHTML = h;
+}
+
+function kosongkanFormUsulan() {
+  ['psId', 'psKejuaraan', 'psTanggal', 'psTempat', 'psPenyelenggara', 'psKelas', 'psCatatan']
+    .forEach(function (i) { el(i).value = ''; });
+  el('psTingkat').selectedIndex = 0; el('psKategori').selectedIndex = 0; el('psMedali').selectedIndex = 0;
+  el('psBukti').value = ''; APP.buktiUsulan = null;
+  el('psBuktiInfo').textContent = '';
+  el('judulUsulan').textContent = '➕ Ajukan prestasi';
+  el('btnSimpanUsulan').textContent = 'Kirim pengajuan';
+}
+
+function editUsulanSaya(id) {
+  var p = APP.usulanSaya.filter(function (x) { return x.id_usulan === id; })[0];
+  if (!p || p.status === 'Disetujui') return;
+  el('psId').value = p.id_usulan;
+  el('psKejuaraan').value = p.nama_kejuaraan; el('psTingkat').value = p.tingkat;
+  el('psTanggal').value = p.tanggal; el('psTempat').value = p.tempat;
+  el('psPenyelenggara').value = p.penyelenggara; el('psKategori').value = p.kategori;
+  el('psKelas').value = p.kelas; el('psMedali').value = p.medali; el('psCatatan').value = p.catatan;
+  el('psBukti').value = ''; APP.buktiUsulan = null;
+  el('psBuktiInfo').textContent = p.bukti_id ? 'Bukti sudah ada. Pilih berkas baru hanya bila ingin menggantinya.' : '';
+  el('judulUsulan').textContent = '✏️ Edit pengajuan';
+  el('btnSimpanUsulan').textContent = 'Simpan perbaikan';
+  el('kartuUsulanSiswa').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function kirimUsulan(tombol) {
+  var edit = !!el('psId').value;
+  tombol.disabled = true;
+  panggil('simpanUsulanPrestasi', {
+    id_usulan: el('psId').value, nama_kejuaraan: el('psKejuaraan').value, tingkat: el('psTingkat').value,
+    tanggal: el('psTanggal').value, tempat: el('psTempat').value, penyelenggara: el('psPenyelenggara').value,
+    kategori: el('psKategori').value, kelas: el('psKelas').value, medali: el('psMedali').value,
+    catatan: el('psCatatan').value
+  }, APP.buktiUsulan).then(function () {
+    kosongkanFormUsulan();
+    muatUsulanSaya();
+    pesan(edit ? 'Perbaikan tersimpan dan diajukan ulang untuk diverifikasi.'
+               : 'Pengajuan terkirim. Menunggu verifikasi pelatih.');
+  }).catch(function (e) { pesan(e.message, true); })
+    .then(function () { tombol.disabled = false; });
+}
+
+/* ---------- Admin & Pelatih ---------- */
+
+function muatVerifikasi() {
+  if (!bolehUbah()) return;
+  panggil('getUsulanPrestasi', el('vfStatus').value).then(function (r) {
+    APP.usulanStaff = r.daftar;
+    setLencanaUsulan(r.jumlah_menunggu);
+    gambarVerifikasi();
+  }).catch(function (e) {
+    el('tabelVerifikasi').innerHTML = '<tr><td class="kosong">' + aman(e.message) + '</td></tr>';
+  });
+}
+
+function gambarVerifikasi() {
+  var h = '<tr><th>Diajukan</th><th>Atlet</th><th>Kejuaraan</th><th>Tingkat</th><th>Kategori</th><th>Medali</th><th>Status</th><th></th></tr>';
+  if (!APP.usulanStaff.length) h += '<tr><td colspan="8" class="kosong">Tidak ada pengajuan pada pilihan ini.</td></tr>';
+  APP.usulanStaff.forEach(function (p) {
+    h += '<tr><td>' + aman((p.diajukan_pada || '').slice(0, 10)) + '<br><small>' + aman(p.diajukan_oleh) + '</small></td>' +
+      '<td>' + aman(p.nama_atlet) + '</td>' +
+      '<td>' + aman(p.nama_kejuaraan) +
+        '<br><small>' + aman([p.tanggal, p.tempat, p.penyelenggara].filter(Boolean).join(' · ')) + '</small>' +
+        (p.catatan ? '<br><small>Catatan: ' + aman(p.catatan) + '</small>' : '') + '</td>' +
+      '<td>' + aman(p.tingkat) + '</td>' +
+      '<td>' + aman(p.kategori) + ' ' + aman(p.kelas) + '</td>' +
+      '<td>' + aman(p.medali) + '</td>' +
+      '<td>' + badgeUsulan(p.status) +
+        (p.status === 'Ditolak' ? '<br><small>' + aman(p.diputuskan_oleh) + ': ' + aman(p.alasan_tolak) + '</small>' : '') +
+        (p.status === 'Disetujui' ? '<br><small>' + aman(p.diputuskan_oleh) + ' · ' + aman(p.id_prestasi) + '</small>' : '') + '</td>' +
+      '<td class="aksi">' + (p.bukti_url ? '<a href="' + aman(p.bukti_url) + '" target="_blank" rel="noopener">bukti</a> ' : '') +
+        (p.status === 'Menunggu'
+          ? '<button class="tombol tombol-kecil" onclick="setujuiUsulan(\'' + aman(p.id_usulan) + '\')">Setujui</button>' +
+            '<button class="tombol bahaya tombol-kecil" onclick="mintaTolakUsulan(\'' + aman(p.id_usulan) + '\')">Tolak</button>'
+          : '') + '</td></tr>';
+  });
+  el('tabelVerifikasi').innerHTML = h;
+}
+
+function setujuiUsulan(id) {
+  var p = APP.usulanStaff.filter(function (x) { return x.id_usulan === id; })[0];
+  if (!p) return;
+  if (!confirm('Setujui prestasi "' + p.nama_kejuaraan + '" milik ' + p.nama_atlet + '?\n\nSetelah disetujui, prestasi masuk ke rekap resmi dan dihitung di statistik, dashboard, dan laporan.')) return;
+  panggil('setujuiUsulanPrestasi', id).then(function () {
+    pesan('Prestasi disetujui dan masuk rekap resmi.');
+    muatVerifikasi();
+    try { muatPrestasi(); } catch (e) {}
+    try { muatRekapMedaliAtlet(); } catch (e) {}
+    try { muatDashboard(); } catch (e) {}
+  }).catch(function (e) { pesan(e.message, true); });
+}
+
+function mintaTolakUsulan(id) {
+  var p = APP.usulanStaff.filter(function (x) { return x.id_usulan === id; })[0];
+  if (!p) return;
+  APP.tolakId = id;
+  el('tlInfo').textContent = '"' + p.nama_kejuaraan + '" — ' + p.nama_atlet;
+  el('tlAlasan').value = '';
+  el('tiraiTolakUsulan').hidden = false;
+  el('tlAlasan').focus();
+}
+
+function kirimTolakUsulan(tombol) {
+  if (!el('tlAlasan').value.trim()) return pesan('Alasan penolakan wajib diisi.', true);
+  tombol.disabled = true;
+  panggil('tolakUsulanPrestasi', APP.tolakId, el('tlAlasan').value).then(function () {
+    el('tiraiTolakUsulan').hidden = true;
+    pesan('Pengajuan ditolak. Siswa dapat melihat alasannya.');
+    muatVerifikasi();
+  }).catch(function (e) { pesan(e.message, true); })
+    .then(function () { tombol.disabled = false; });
+}
+
+/* ---------- Pendengar (delegasi) ---------- */
+
+document.addEventListener('click', function (e) {
+  var t = e.target.closest ? e.target.closest('button') : null;
+  if (!t || !t.id) return;
+  if (t.id === 'btnSimpanUsulan') kirimUsulan(t);
+  else if (t.id === 'btnUsulanBaru') kosongkanFormUsulan();
+  else if (t.id === 'btnTolakKirim') kirimTolakUsulan(t);
+  else if (t.id === 'btnTolakBatal') el('tiraiTolakUsulan').hidden = true;
+});
+
+document.addEventListener('change', function (e) {
+  if (!e.target) return;
+  if (e.target.id === 'vfStatus') muatVerifikasi();
+  if (e.target.id === 'psBukti') {
+    bacaBerkas(e.target).then(function (f) { APP.buktiUsulan = f; })
+      .catch(function (err) { pesan(err.message, true); e.target.value = ''; });
+  }
+});
+
+/* Segarkan daftar saat menu Prestasi dibuka. */
+document.addEventListener('click', function (e) {
+  var b = e.target.closest ? e.target.closest('nav button[data-hal="prestasi"]') : null;
+  if (!b) return;
+  if (siswaTertaut()) muatUsulanSaya();
+  if (bolehUbah()) muatVerifikasi();
+});
+
+/* ===========================================================
+   REVISI — (1) tanggal lahir bisa diubah siswa, format hari-bulan-tahun
+            (2) Kas Umum, buku kas gabungan, dan edit penuh Admin
+   Kode lama tidak diubah. Fungsi lama hanya dibungkus atau digantikan lewat
+   penugasan ulang nama fungsi; teks aslinya tetap utuh di berkas.
+   =========================================================== */
+
+/* ---------- (1) Biodata saya: tanggal lahir hari-bulan-tahun ---------- */
+
+/** 'yyyy-MM-dd' → 'dd-MM-yyyy' */
+function tglKeInput(iso) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+  return m ? m[3] + '-' + m[2] + '-' + m[1] : '';
+}
+
+/** 'dd-MM-yyyy' (juga '/' atau '.') → 'yyyy-MM-dd', atau null bila bukan tanggal nyata. */
+function tglInputKeIso(teks) {
+  var m = /^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})$/.exec(String(teks || '').trim());
+  if (!m) return null;
+  var d = Number(m[1]), mo = Number(m[2]), y = Number(m[3]);
+  var dt = new Date(y, mo - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+  if (y < 1900 || dt.getTime() > Date.now()) return null;
+  var p2 = function (n) { return ('0' + n).slice(-2); };
+  return y + '-' + p2(mo) + '-' + p2(d);
+}
+
+/** Pengetikan otomatis: 20052012 → 20-05-2012. */
+function maskTanggal(nilai) {
+  var d = String(nilai || '').replace(/\D/g, '').slice(0, 8), h = d.slice(0, 2);
+  if (d.length > 2) h += '-' + d.slice(2, 4);
+  if (d.length > 4) h += '-' + d.slice(4);
+  return h;
+}
+
+function siapkanKolomTanggalSaya() {
+  if (document.getElementById('bsTanggal')) return;
+  var kunci = document.getElementById('bsKunci');
+  if (!kunci) return;
+  kunci.parentNode.insertAdjacentHTML('beforebegin',
+    '<div><label for="bsTanggal">Tanggal lahir (hari-bulan-tahun)</label>' +
+    '<input type="text" id="bsTanggal" inputmode="numeric" maxlength="10" placeholder="HH-BB-TTTT" autocomplete="off">' +
+    '<p class="petunjuk">Contoh: 20-05-2012. Bila diubah, skor tes dihitung ulang berdasarkan usia baru.</p></div>');
+}
+
+(function () {
+  var isiBiodataSayaSebelumnya = isiBiodataSaya;
+  isiBiodataSaya = function () {
+    isiBiodataSayaSebelumnya.apply(this, arguments);
+    var a = atletSaya();
+    if (!a) return;
+    siapkanKolomTanggalSaya();
+    document.getElementById('bsTanggal').value = tglKeInput(a.tanggal_lahir);
+    document.getElementById('bsKunci').value = a.gender || '–';
+    var lab = document.querySelector('label[for="bsKunci"]');
+    if (lab) lab.textContent = 'Gender (dikunci, hubungi pelatih untuk mengubah)';
+    var info = document.querySelector('#kartuBiodataSaya > .petunjuk');
+    if (info) info.textContent = 'Perbaiki data dirimu di sini, termasuk tanggal lahir. Gender hanya dapat diubah pelatih karena memengaruhi perhitungan skor.';
+  };
+})();
+
+/** Menggantikan penyimpanan biodata lama agar tanggal lahir ikut terkirim. */
+simpanBiodataSayaKlien = function (tombol) {
+  var a = atletSaya();
+  var iso = tglInputKeIso(el('bsTanggal').value);
+  if (!iso) return pesan('Tanggal lahir tidak valid. Gunakan format hari-bulan-tahun, mis. 20-05-2012.', true);
+  if (a && a.tanggal_lahir && a.tanggal_lahir !== iso &&
+      !confirm('Tanggal lahir akan diubah dari ' + tglKeInput(a.tanggal_lahir) + ' menjadi ' + tglKeInput(iso) +
+               '.\n\nUsia berubah dan skor seluruh tes dihitung ulang berdasarkan usia baru. Perubahan ini tercatat. Lanjutkan?')) return;
+  tombol.disabled = true;
+  panggil('simpanBiodataSayaLengkap', {
+    nama: el('bsNama').value, tempat_lahir: el('bsTempat').value, asal_daerah: el('bsAsal').value,
+    tanggal_lahir: iso
+  }, APP.fotoSaya).then(function () {
+    return panggil('getDaftarAtlet');
+  }).then(function (daftar) {
+    APP.atlet = daftar;
+    isiPilihanAtlet(); gambarTabelAtlet(); isiBiodataSaya();
+    try { muatDashboard(); } catch (e) {}
+    pesan('Biodata tersimpan.');
+  }).catch(function (e) { pesan(e.message, true); })
+    .then(function () { tombol.disabled = false; });
+};
+
+document.addEventListener('input', function (e) {
+  if (e.target && e.target.id === 'bsTanggal') e.target.value = maskTanggal(e.target.value);
+});
+
+/* ---------- (2) Kas Umum & edit penuh (khusus Admin) ---------- */
+
+APP.ku = { konfig: null, daftar: [], nota: null, hapus: null, bayarId: '', tagihanId: '' };
+
+function bulanSekarang() {
+  var d = new Date();
+  return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2);
+}
+
+function terapkanKasUmum() {
+  var admin = adalahAdmin();
+  document.getElementById('btnSubKasUmum').style.display = admin ? '' : 'none';
+}
+
+(function () {
+  var terapkanHakAksesSebelumnya2 = terapkanHakAkses;
+  terapkanHakAkses = function () {
+    terapkanHakAksesSebelumnya2.apply(this, arguments);
+    terapkanKasUmum();
+  };
+  var muatSubKeuanganSebelumnya = muatSubKeuangan;
+  muatSubKeuangan = function () {
+    if (subKeuanganAktif() === 'kasumum') return muatKasUmum();
+    return muatSubKeuanganSebelumnya.apply(this, arguments);
+  };
+})();
+
+function badgeJenis(j) {
+  return '<span class="badge ' + (j === 'Masuk' ? 'st-lunas' : 'st-belum') + '">' + aman(j) + '</span>';
+}
+
+function muatKasUmum() {
+  if (!adalahAdmin()) return;
+  var semua = el('kuSemua').checked;
+  el('kuBulan').disabled = semua;
+  if (!el('kuBulan').value) el('kuBulan').value = bulanSekarang();
+  if (!APP.ku.konfig) {
+    panggil('getKonfigKas').then(function (k) { APP.ku.konfig = k; muatKasUmum(); })
+      .catch(function (e) { pesan(e.message, true); });
+    return;
+  }
+  el('kuTabel').innerHTML = '<tr><td class="memuat">Memuat…</td></tr>';
+  panggil('getBukuKas', el('kuBulan').value, semua).then(function (b) {
+    APP.ku.daftar = b.daftar;
+    gambarKasUmum(b);
+  }).catch(function (e) {
+    el('kuTabel').innerHTML = '<tr><td class="kosong">' + aman(e.message) + '</td></tr>';
+  });
+  panggil('getLogKeuangan', 50).then(gambarLogKeu).catch(function () {});
+}
+
+function ringkasKategori(peta) {
+  var k = Object.keys(peta);
+  if (!k.length) return '–';
+  return k.map(function (x) { return aman(x) + ' ' + rp(peta[x]); }).join(' · ');
+}
+
+function gambarKasUmum(b) {
+  el('kuStat').innerHTML =
+    kartuStat(rp(b.saldo_awal_periode), 'Saldo awal') +
+    kartuStat(rp(b.masuk), 'Total masuk') +
+    kartuStat(rp(b.keluar), 'Total keluar') +
+    kartuStat(rp(b.saldo_akhir), 'Saldo akhir');
+  el('kuKategori').innerHTML = '<b>Masuk per kategori:</b> ' + ringkasKategori(b.per_kategori.masuk) +
+    '<br><b>Keluar per kategori:</b> ' + ringkasKategori(b.per_kategori.keluar);
+
+  var h = '<tr><th>Tanggal</th><th>Jenis</th><th>Kategori</th><th>Uraian</th><th>Metode</th><th class="angka">Jumlah</th><th>Sumber</th><th></th></tr>';
+  if (!b.daftar.length) h += '<tr><td colspan="8" class="kosong">Belum ada transaksi pada periode ini.</td></tr>';
+  b.daftar.forEach(function (r, i) {
+    var uraian = r.sumber === 'Iuran'
+      ? aman(r.uraian) + '<br><small>' + aman(labelTagihan(r.periode_tagihan, r.nama_biaya, true)) + (r.catatan ? ' · ' + aman(r.catatan) : '') + '</small>'
+      : aman(r.uraian);
+    h += '<tr><td>' + aman(tglIndo(r.tanggal)) + '</td><td>' + badgeJenis(r.jenis) + '</td>' +
+      '<td>' + aman(r.kategori) + '</td><td>' + uraian + '</td><td>' + aman(r.metode) + '</td>' +
+      '<td class="angka" style="color:' + (r.jenis === 'Masuk' ? '#27924F' : '#B0262E') + '"><b>' +
+        (r.jenis === 'Masuk' ? '+' : '−') + rp(r.jumlah) + '</b></td>' +
+      '<td><small>' + aman(r.sumber) + (r.oleh ? '<br>' + aman(r.oleh) : '') + '</small></td>' +
+      '<td class="aksi">' + (r.nota_url ? '<a href="' + aman(r.nota_url) + '" target="_blank" rel="noopener">nota</a> ' : '') +
+        '<button class="tombol kedua tombol-kecil" onclick="editBarisKu(' + i + ')">Edit</button>' +
+        '<button class="tombol bahaya tombol-kecil" onclick="hapusBarisKu(' + i + ')">Hapus</button></td></tr>';
+  });
+  el('kuTabel').innerHTML = h;
+}
+
+function gambarLogKeu(daftar) {
+  var h = '<tr><th>Waktu</th><th>Oleh</th><th>Aksi</th><th>Objek</th><th>Rincian</th></tr>';
+  if (!daftar.length) h += '<tr><td colspan="5" class="kosong">Belum ada perubahan tercatat.</td></tr>';
+  daftar.forEach(function (l) {
+    h += '<tr><td>' + aman(l.waktu) + '</td><td>' + aman(l.oleh) + '</td><td>' + aman(l.aksi) + '</td>' +
+      '<td>' + aman(l.objek) + '<br><small>' + aman(l.id_objek) + '</small></td>' +
+      '<td><small>' + aman(l.rincian) + '</small></td></tr>';
+  });
+  el('kuLog').innerHTML = h;
+}
+
+/* --- formulir pemasukan / pengeluaran --- */
+
+function opsiKategoriKas(jenis, terpilih) {
+  var daftar = (jenis === 'Masuk' ? APP.ku.konfig.kat_masuk : APP.ku.konfig.kat_keluar).slice();
+  if (terpilih && daftar.indexOf(terpilih) < 0) daftar.push(terpilih);
+  return daftar.map(function (k) {
+    return '<option' + (k === terpilih ? ' selected' : '') + '>' + aman(k) + '</option>';
+  }).join('');
+}
+
+function bukaFormKas(jenis, r) {
+  if (!APP.ku.konfig) return pesan('Data kategori belum termuat. Coba lagi.', true);
+  el('kfId').value = r ? r.id : '';
+  el('kfJenis').value = jenis;
+  el('kfJudul').textContent = (r ? 'Edit ' : 'Catat ') + (jenis === 'Masuk' ? 'pemasukan' : 'pengeluaran');
+  el('kfTanggal').value = r ? r.tanggal : hariIni();
+  el('kfKategori').innerHTML = opsiKategoriKas(jenis, r ? r.kategori : '');
+  el('kfJumlah').value = r ? r.jumlah : '';
+  el('kfMetode').innerHTML = APP.ku.konfig.metode.map(function (m) {
+    return '<option' + (r && r.metode === m ? ' selected' : '') + '>' + aman(m) + '</option>';
+  }).join('');
+  el('kfKet').value = r ? r.uraian : '';
+  el('kfNota').value = ''; APP.ku.nota = null;
+  el('kfNotaInfo').textContent = (r && r.nota_url) ? 'Nota sudah ada. Pilih berkas baru hanya bila ingin menggantinya.' : '';
+  el('tiraiKas').hidden = false;
+}
+
+function simpanFormKas(tombol) {
+  tombol.disabled = true;
+  panggil('simpanKasUmum', {
+    id_kas: el('kfId').value, jenis: el('kfJenis').value, tanggal: el('kfTanggal').value,
+    kategori: el('kfKategori').value, jumlah: el('kfJumlah').value, metode: el('kfMetode').value,
+    keterangan: el('kfKet').value
+  }, APP.ku.nota).then(function () {
+    el('tiraiKas').hidden = true;
+    pesan('Transaksi tersimpan.');
+    muatKasUmum();
+  }).catch(function (e) { pesan(e.message, true); })
+    .then(function () { tombol.disabled = false; });
+}
+
+/* --- edit & hapus dari baris buku kas --- */
+
+function editBarisKu(i) {
+  var r = APP.ku.daftar[i]; if (!r) return;
+  if (r.sumber === 'Kas') return bukaFormKas(r.jenis, r);
+  APP.ku.bayarId = r.id;
+  el('ebInfo').innerHTML = '<b>' + aman(r.uraian) + '</b> · ' + aman(labelTagihan(r.periode_tagihan, r.nama_biaya)) +
+    '<br>Jumlah tidak boleh membuat tagihan kelebihan bayar.';
+  el('ebTanggal').value = r.tanggal;
+  el('ebJumlah').value = r.jumlah;
+  el('ebMetode').innerHTML = APP.ku.konfig.metode.map(function (m) {
+    return '<option' + (r.metode === m ? ' selected' : '') + '>' + aman(m) + '</option>';
+  }).join('');
+  el('ebCatatan').value = r.catatan || '';
+  el('tiraiEditBayar').hidden = false;
+}
+
+function hapusBarisKu(i) {
+  var r = APP.ku.daftar[i]; if (!r) return;
+  APP.ku.hapus = { tipe: r.sumber === 'Kas' ? 'kas' : 'bayar', id: r.id };
+  el('hkInfo').innerHTML = 'Hapus permanen <b>' + (r.jenis === 'Masuk' ? 'pemasukan' : 'pengeluaran') + ' ' + rp(r.jumlah) + '</b> (' +
+    aman(r.kategori) + ' · ' + aman(r.uraian) + ')?' +
+    (r.sumber === 'Iuran' ? '<br>Tagihan atlet tetap ada, sisanya bertambah kembali.' : '') +
+    '<br>Salinan datanya tersimpan di riwayat perubahan.';
+  el('hkAlasan').value = '';
+  el('tiraiHapusKeu').hidden = false;
+}
+
+function kirimHapusKeu(tombol) {
+  var alasan = el('hkAlasan').value.trim();
+  if (!alasan) return pesan('Alasan penghapusan wajib diisi.', true);
+  var h = APP.ku.hapus; if (!h) return;
+  var fn = h.tipe === 'kas' ? 'hapusKasUmum' : (h.tipe === 'bayar' ? 'hapusPembayaranAdmin' : 'hapusTagihanAdmin');
+  tombol.disabled = true;
+  panggil(fn, h.id, alasan).then(function () {
+    el('tiraiHapusKeu').hidden = true;
+    el('tiraiTagihanAdmin').hidden = true;
+    pesan('Data dihapus permanen dan tercatat di riwayat.');
+    muatSubKeuangan();
+  }).catch(function (e) { pesan(e.message, true); })
+    .then(function () { tombol.disabled = false; });
+}
+
+/* --- edit penuh tagihan (tombol tambahan di tabel Iuran, hanya Admin) --- */
+
+(function () {
+  var gambarIuranSebelumnya = gambarIuran;
+  gambarIuran = function () {
+    gambarIuranSebelumnya.apply(this, arguments);
+    if (!adalahAdmin()) return;
+    document.querySelectorAll('#iuTabel button[onclick^="bukaUbahTagihan"]').forEach(function (b) {
+      var m = /bukaUbahTagihan\('([^']+)'\)/.exec(b.getAttribute('onclick'));
+      if (!m) return;
+      b.insertAdjacentHTML('afterend',
+        '<button class="tombol kedua tombol-kecil" onclick="bukaTagihanAdmin(\'' + m[1] + '\')">Edit penuh</button>');
+    });
+  };
+})();
+
+function bukaTagihanAdmin(id) {
+  var t = APP.keu.iuranData.filter(function (x) { return x.id_tagihan === id; })[0];
+  if (!t) return;
+  APP.ku.tagihanId = id;
+  el('taInfo').innerHTML = '<b>' + aman(t.nama_atlet) + '</b> · ' + aman(labelTagihan(t.periode, t.nama_biaya)) +
+    '<br>Sudah dibayar ' + rp(t.terbayar) + ' (nominal tidak boleh di bawah ini).';
+  el('taNamaWrap').hidden = !t.custom;
+  el('taPeriodeWrap').hidden = !t.custom;
+  el('taNama').value = t.custom ? t.nama_biaya : '';
+  el('taPeriode').value = t.periode;
+  el('taNominal').value = t.nominal;
+  el('taCatatan').value = t.catatan || '';
+  el('btnTaHapus').hidden = !t.custom;
+  el('taPeringatan').textContent = t.custom
+    ? 'Menghapus tagihan biaya lain juga menghapus pembayarannya.'
+    : 'Tagihan iuran bulanan dibuat otomatis, jadi bulannya tidak bisa diubah dan tidak bisa dihapus. Ubah nominal menjadi 0 untuk membebaskan bulan ini.';
+  el('tiraiTagihanAdmin').hidden = false;
+}
+
+/* ---------- Pendengar (delegasi) ---------- */
+
+document.addEventListener('click', function (e) {
+  var t = e.target.closest ? e.target.closest('button') : null;
+  if (!t || !t.id) return;
+  switch (t.id) {
+    case 'btnKuMasuk': bukaFormKas('Masuk', null); break;
+    case 'btnKuKeluar': bukaFormKas('Keluar', null); break;
+    case 'btnKfBatal': el('tiraiKas').hidden = true; break;
+    case 'btnKfSimpan': simpanFormKas(t); break;
+    case 'btnKuKonfig':
+      if (!APP.ku.konfig) return pesan('Data belum termuat. Coba lagi.', true);
+      el('kcMasuk').value = APP.ku.konfig.kat_masuk.join('\n');
+      el('kcKeluar').value = APP.ku.konfig.kat_keluar.join('\n');
+      el('kcSaldo').value = APP.ku.konfig.saldo_awal;
+      el('tiraiKonfigKas').hidden = false;
+      break;
+    case 'btnKcBatal': el('tiraiKonfigKas').hidden = true; break;
+    case 'btnKcSimpan':
+      t.disabled = true;
+      panggil('simpanKonfigKas', {
+        kat_masuk: el('kcMasuk').value.split('\n'), kat_keluar: el('kcKeluar').value.split('\n'),
+        saldo_awal: el('kcSaldo').value
+      }).then(function (k) {
+        APP.ku.konfig = k; el('tiraiKonfigKas').hidden = true;
+        pesan('Pengaturan kas tersimpan.'); muatKasUmum();
+      }).catch(function (err) { pesan(err.message, true); })
+        .then(function () { t.disabled = false; });
+      break;
+    case 'btnEbBatal': el('tiraiEditBayar').hidden = true; break;
+    case 'btnEbSimpan':
+      t.disabled = true;
+      panggil('ubahPembayaranAdmin', {
+        id_bayar: APP.ku.bayarId, tanggal: el('ebTanggal').value, jumlah: el('ebJumlah').value,
+        metode: el('ebMetode').value, catatan: el('ebCatatan').value
+      }).then(function () {
+        el('tiraiEditBayar').hidden = true; pesan('Pembayaran diperbarui dan tercatat.'); muatSubKeuangan();
+      }).catch(function (err) { pesan(err.message, true); })
+        .then(function () { t.disabled = false; });
+      break;
+    case 'btnTaBatal': el('tiraiTagihanAdmin').hidden = true; break;
+    case 'btnTaSimpan':
+      t.disabled = true;
+      panggil('ubahTagihanAdmin', {
+        id_tagihan: APP.ku.tagihanId, nama_biaya: el('taNama').value, periode: el('taPeriode').value,
+        nominal: el('taNominal').value, catatan: el('taCatatan').value
+      }).then(function () {
+        el('tiraiTagihanAdmin').hidden = true; pesan('Tagihan diperbarui dan tercatat.'); muatSubKeuangan();
+      }).catch(function (err) { pesan(err.message, true); })
+        .then(function () { t.disabled = false; });
+      break;
+    case 'btnTaHapus':
+      var tg = APP.keu.iuranData.filter(function (x) { return x.id_tagihan === APP.ku.tagihanId; })[0];
+      if (!tg) return;
+      APP.ku.hapus = { tipe: 'tagihan', id: tg.id_tagihan };
+      el('hkInfo').innerHTML = 'Hapus permanen tagihan <b>' + aman(labelTagihan(tg.periode, tg.nama_biaya)) + '</b> milik <b>' +
+        aman(tg.nama_atlet) + '</b> (' + rp(tg.nominal) + ') beserta semua pembayarannya (' + rp(tg.terbayar) + ')?' +
+        '<br>Salinan datanya tersimpan di riwayat perubahan.';
+      el('hkAlasan').value = '';
+      el('tiraiHapusKeu').hidden = false;
+      break;
+    case 'btnHkBatal': el('tiraiHapusKeu').hidden = true; break;
+    case 'btnHkKirim': kirimHapusKeu(t); break;
+  }
+});
+
+document.addEventListener('change', function (e) {
+  if (!e.target) return;
+  if (e.target.id === 'kuBulan' || e.target.id === 'kuSemua') muatKasUmum();
+  if (e.target.id === 'kfNota') {
+    bacaBerkas(e.target).then(function (f) { APP.ku.nota = f; })
+      .catch(function (err) { pesan(err.message, true); e.target.value = ''; });
+  }
+});
+</script>

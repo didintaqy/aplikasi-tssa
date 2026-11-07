@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<?!= include('style'); ?>
+</head>
+<body>
+
+<!-- ============ LAYAR MASUK ============ -->
+<div id="layarMasuk" class="layar-masuk">
+  <form class="kotak-masuk" id="formMasuk" onsubmit="return false">
+    <img id="logoMasuk" alt="" hidden>
+    <h1 id="judulMasuk">REMAJA</h1>
+    <p class="petunjuk" id="subMasuk"></p>
+
+    <label for="mkUser">Nama pengguna</label>
+    <input type="text" id="mkUser" autocomplete="username" autocapitalize="none" spellcheck="false">
+
+    <label for="mkSandi">Kata sandi</label>
+    <input type="password" id="mkSandi" autocomplete="current-password">
+    <label class="centang"><input type="checkbox" class="lihat-sandi" data-target="mkSandi"> Tampilkan kata sandi</label>
+
+    <button class="tombol lebar" id="btnMasuk" type="submit">Masuk</button>
+    <p class="salah-teks" id="pesanMasuk"></p>
+    <p class="petunjuk">Akun disediakan admin akademi. Tiga peran tersedia: Admin, Pelatih, dan Siswa.</p>
+  </form>
+</div>
+
+<!-- ============ APLIKASI ============ -->
+<div class="app" id="aplikasi" hidden>
+
+  <div class="kepala">
+    <img id="logo" alt="" hidden>
+    <div>
+      <h1 id="namaAplikasi">REMAJA</h1>
+      <small id="subjudul"></small>
+    </div>
+    <div class="akun">
+      <span class="peran" id="labelPeran">…</span>
+      <button class="tombol kedua tombol-kecil" id="btnGantiSandi" type="button">Kata sandi</button>
+      <button class="tombol kedua tombol-kecil" id="btnKeluar" type="button">Keluar</button>
+    </div>
+  </div>
+
+  <nav id="navigasi">
+    <button data-hal="dashboard" id="navDashboard" class="aktif">🏠 Dashboard</button>
+    <button data-hal="input" id="navInput">📝 Input Performa</button>
+    <button data-hal="atlet" id="navAtlet">👥 Data Atlet</button>
+    <button data-hal="prestasi" id="navPrestasi">🏆 Prestasi</button>
+    <button data-hal="perkembangan" id="navPerkembangan">📈 Perkembangan</button>
+    <button data-hal="laporan" id="navLaporan">📄 Laporan</button>
+    <button data-hal="keuangan" id="navKeuangan">💰 Keuangan</button>
+    <button data-hal="pengaturan" id="navPengaturan">⚙️ Pengaturan</button>
+  </nav>
+
+  <!-- ============ DASHBOARD ============ -->
+  <section class="halaman tampil" id="hal-dashboard">
+    <div class="kartu grid k4" id="ringkasanTim"></div>
+
+    <div class="kartu" id="rekapMedaliAtletWrap">
+      <h3 style="margin-top:0">Rekap medali per atlet</h3>
+      <div class="tabelwrap"><table id="rekapMedaliAtlet"></table></div>
+    </div>
+
+    <div class="kartu">
+      <div class="grid k2">
+        <div>
+          <label for="pilihAtlet">Pilih atlet</label>
+          <select id="pilihAtlet"></select>
+        </div>
+        <div>
+          <label for="pilihTes">Sesi tes</label>
+          <select id="pilihTes"></select>
+        </div>
+      </div>
+    </div>
+
+    <div class="kartu" id="kartuSpp" hidden></div>
+
+    <div id="isiDashboard"><p class="memuat">Memuat data…</p></div>
+  </section>
+
+  <!-- ============ INPUT PERFORMA ============ -->
+  <section class="halaman" id="hal-input">
+    <h2 class="judul">Input hasil tes</h2>
+    <div class="kartu">
+      <input type="hidden" id="inIdTes">
+      <div class="grid k2">
+        <div>
+          <label for="inAtlet">Atlet</label>
+          <select id="inAtlet"></select>
+        </div>
+        <div>
+          <label for="inTanggal">Tanggal tes</label>
+          <input type="date" id="inTanggal">
+        </div>
+      </div>
+      <label for="inPelatih">Pelatih penguji</label>
+      <input type="text" id="inPelatih" placeholder="Nama pelatih">
+    </div>
+
+    <div class="kartu">
+      <h3 style="margin-top:0">Skrining nadi &amp; antropometri</h3>
+      <div class="grid k4">
+        <div><label for="in_nadi_istirahat">Nadi istirahat (/menit)</label><input type="number" id="in_nadi_istirahat" class="isian"></div>
+        <div><label for="in_nadi_latihan">Nadi latihan (/menit)</label><input type="number" id="in_nadi_latihan" class="isian"></div>
+        <div><label for="in_tinggi_badan">Tinggi badan (m)</label><input type="number" step="0.01" id="in_tinggi_badan" class="isian"></div>
+        <div><label for="in_berat_badan">Berat badan (kg)</label><input type="number" step="0.1" id="in_berat_badan" class="isian"></div>
+      </div>
+      <p class="petunjuk">Nadi maksimal dan IMT dihitung otomatis.</p>
+    </div>
+
+    <div class="kartu">
+      <h3 style="margin-top:0">Tes fisik</h3>
+      <div class="grid k4" id="isianTes"></div>
+      <p class="petunjuk">Daftar item mengikuti pengaturan admin. Benchmark diambil otomatis sesuai gender dan usia atlet.</p>
+      <button class="tombol kedua" id="btnPratinjau">Hitung pratinjau</button>
+      <button class="tombol" id="btnSimpanTes">Simpan sesi tes</button>
+      <button class="tombol kedua" id="btnTesBaru">Tes baru</button>
+    </div>
+
+    <div id="pratinjauHasil"></div>
+
+    <h2 class="judul">Riwayat tes atlet ini</h2>
+    <div class="kartu">
+      <p class="petunjuk">Pilih atlet di atas untuk melihat riwayatnya. Klik Edit untuk mengubah data tes yang sudah tersimpan.</p>
+      <div class="tabelwrap"><table id="tabelRiwayatTes"></table></div>
+    </div>
+  </section>
+
+  <!-- ============ DATA ATLET ============ -->
+  <section class="halaman" id="hal-atlet">
+    <h2 class="judul">Formulir atlet</h2>
+    <div class="kartu">
+      <input type="hidden" id="atId">
+      <div class="unggah">
+        <img class="pratinjau" id="atPratinjau" alt="Pratinjau foto">
+        <div class="kendali">
+          <label for="atFoto">Foto atlet</label>
+          <input type="file" id="atFoto" accept="image/png,image/jpeg">
+          <p class="petunjuk">Pilih berkas JPG atau PNG, maksimal 5 MB. Foto diunggah ke folder Drive akademi dan otomatis menggantikan foto lama.</p>
+          <button class="tombol kedua tombol-kecil" id="btnHapusFoto" type="button">Batalkan pilihan</button>
+        </div>
+      </div>
+
+      <div class="grid k2">
+        <div><label for="atNama">Nama lengkap</label><input type="text" id="atNama"></div>
+        <div><label for="atGender">Gender</label>
+          <select id="atGender"><option value="">— pilih —</option><option>Laki-laki</option><option>Perempuan</option></select>
+        </div>
+        <div><label for="atTempat">Tempat lahir</label><input type="text" id="atTempat"></div>
+        <div><label for="atTanggal">Tanggal lahir</label><input type="date" id="atTanggal">
+          <p class="petunjuk" id="infoUsia">Usia harus 5–40 tahun.</p>
+        </div>
+        <div><label for="atAsal">Asal daerah</label><input type="text" id="atAsal" placeholder="Batam, Kepri"></div>
+        <div><label for="atTingkat">Tingkatan / kelas</label><input type="text" id="atTingkat" placeholder="Melati 4 · Seni Tunggal · Kelas D"></div>
+        <div><label for="atStatus">Status</label>
+          <select id="atStatus"><option>Aktif</option><option>Non-aktif</option></select>
+        </div>
+        <div><label for="atTahun">Tahun bergabung</label><input type="number" id="atTahun"></div>
+      </div>
+      <label for="atCatatan">Catatan pelatih</label>
+      <textarea id="atCatatan" rows="2"></textarea>
+
+      <button class="tombol" id="btnSimpanAtlet">Simpan atlet</button>
+      <button class="tombol kedua" id="btnAtletBaru">Formulir kosong</button>
+    </div>
+
+    <h2 class="judul">Daftar atlet</h2>
+    <div class="kartu">
+      <input type="search" id="cariAtlet" placeholder="Cari nama atau ID atlet">
+      <div class="tabelwrap"><table id="tabelAtlet"></table></div>
+    </div>
+
+    <!-- ===== Revisi 3: biodata sendiri, ekspor, impor ===== -->
+    <div class="kartu" id="kartuBiodataSaya" hidden>
+      <h3 style="margin-top:0">✏️ Biodata saya</h3>
+      <p class="petunjuk">Perbaiki data dirimu di sini. Tanggal lahir dan gender hanya dapat diubah pelatih karena memengaruhi perhitungan skor.</p>
+      <div class="unggah">
+        <img class="pratinjau" id="bsPratinjau" alt="Foto">
+        <div class="kendali">
+          <label for="bsFoto">Foto (JPG/PNG, maksimal 5 MB)</label>
+          <input type="file" id="bsFoto" accept="image/*">
+        </div>
+      </div>
+      <div class="grid k2">
+        <div><label for="bsNama">Nama</label><input type="text" id="bsNama" maxlength="100"></div>
+        <div><label for="bsTempat">Tempat lahir</label><input type="text" id="bsTempat" maxlength="100"></div>
+        <div><label for="bsAsal">Asal daerah</label><input type="text" id="bsAsal" maxlength="100"></div>
+        <div><label for="bsKunci">Dikunci (hubungi pelatih untuk mengubah)</label><input type="text" id="bsKunci" disabled></div>
+      </div>
+      <button class="tombol" id="btnSimpanBiodataSaya" type="button">Simpan perubahan</button>
+    </div>
+
+    <div class="kartu" id="kartuEksporSaya" hidden>
+      <h3 style="margin-top:0">⬇️ Unduh data saya</h3>
+      <p class="petunjuk">Salinan biodatamu dalam format Excel atau CSV.</p>
+      <button class="tombol kedua" id="btnEksporSayaXlsx" type="button">Unduh Excel (.xlsx)</button>
+      <button class="tombol kedua" id="btnEksporSayaCsv" type="button">Unduh CSV</button>
+    </div>
+
+    <div class="kartu" id="kartuImporEkspor" hidden>
+      <h3 style="margin-top:0">📤 Ekspor data atlet</h3>
+      <p class="petunjuk">Semua atlet (termasuk yang non-aktif), kolomnya sama dengan templat impor sehingga bisa diubah lalu diimpor kembali. Foto tidak ikut.</p>
+      <button class="tombol" id="btnEksporXlsx" type="button">Unduh Excel (.xlsx)</button>
+      <button class="tombol kedua" id="btnEksporCsv" type="button">Unduh CSV</button>
+
+      <h3 style="margin:26px 0 0">📥 Impor data atlet</h3>
+      <p class="petunjuk">Unduh templat, isi, lalu unggah. Atlet dengan <b>ID yang sama</b>, atau <b>nama dan tanggal lahir yang sama</b>, akan <b>diperbarui</b>; sel yang dikosongkan tidak menghapus data lama. Selain itu dibuat sebagai atlet baru. Baris yang salah dilaporkan tanpa menggagalkan baris lain. Foto tidak dapat diimpor.</p>
+      <button class="tombol kedua" id="btnTemplatXlsx" type="button">Unduh templat (.xlsx)</button>
+      <button class="tombol kedua" id="btnTemplatCsv" type="button">Unduh templat (.csv)</button>
+      <label for="imporFile">Berkas yang akan diimpor (.xlsx atau .csv)</label>
+      <input type="file" id="imporFile" accept=".xlsx,.xls,.csv,.txt">
+      <p class="petunjuk" id="imporInfo"></p>
+      <button class="tombol" id="btnImporProses" type="button" disabled>Impor sekarang</button>
+      <div id="imporHasil"></div>
+    </div>
+  </section>
+
+  <!-- ============ PRESTASI ============ -->
+  <section class="halaman" id="hal-prestasi">
+    <h2 class="judul" id="judulFormPrestasi">Tambah prestasi</h2>
+    <div class="kartu" id="kartuFormPrestasi">
+      <input type="hidden" id="prId">
+      <div class="grid k2">
+        <div><label for="prAtlet">Atlet</label><select id="prAtlet"></select></div>
+        <div><label for="prKejuaraan">Nama kejuaraan</label><input type="text" id="prKejuaraan"></div>
+        <div><label for="prTingkat">Tingkat</label>
+          <select id="prTingkat"><option>Sekolah</option><option>Kota</option><option>Provinsi</option><option>Nasional</option><option>Internasional</option></select>
+        </div>
+        <div><label for="prTanggal">Tanggal</label><input type="date" id="prTanggal"></div>
+        <div><label for="prTempat">Tempat</label><input type="text" id="prTempat"></div>
+        <div><label for="prPenyelenggara">Penyelenggara</label><input type="text" id="prPenyelenggara"></div>
+        <div><label for="prKategori">Kategori</label>
+          <select id="prKategori"><option>Tanding</option><option>Seni Tunggal</option><option>Seni Ganda</option><option>Seni Regu</option></select>
+        </div>
+        <div><label for="prKelas">Kelas</label><input type="text" id="prKelas"></div>
+        <div><label for="prMedali">Medali</label>
+          <select id="prMedali"><option>Emas</option><option>Perak</option><option>Perunggu</option><option>Partisipasi</option></select>
+        </div>
+        <div><label for="prBukti">Bukti / sertifikat</label><input type="file" id="prBukti" accept="image/png,image/jpeg"></div>
+      </div>
+      <label for="prCatatan">Catatan</label>
+      <textarea id="prCatatan" rows="2"></textarea>
+      <button class="tombol" id="btnSimpanPrestasi">Simpan prestasi</button>
+      <button class="tombol kedua" id="btnPrestasiBaru">Formulir kosong</button>
+    </div>
+
+    <h2 class="judul">Seluruh prestasi</h2>
+    <div class="kartu"><div class="tabelwrap"><table id="tabelPrestasi"></table></div></div>
+
+    <!-- ===== Prestasi oleh siswa: pengajuan dan verifikasi ===== -->
+    <div class="kartu" id="kartuVerifikasi" hidden>
+      <h3 style="margin-top:0">🔎 Verifikasi prestasi dari siswa</h3>
+      <p class="petunjuk">Prestasi yang diajukan siswa baru masuk rekap resmi (medali, statistik, dashboard, laporan) setelah disetujui di sini.</p>
+      <label for="vfStatus">Tampilkan</label>
+      <select id="vfStatus">
+        <option value="Menunggu" selected>Menunggu verifikasi</option>
+        <option value="Ditolak">Ditolak</option>
+        <option value="Disetujui">Disetujui</option>
+        <option value="">Semua</option>
+      </select>
+      <div class="tabelwrap" style="margin-top:12px"><table id="tabelVerifikasi"></table></div>
+    </div>
+
+    <div class="kartu" id="kartuUsulanSiswa" hidden>
+      <h3 style="margin-top:0" id="judulUsulan">➕ Ajukan prestasi</h3>
+      <p class="petunjuk">Prestasimu akan diperiksa pelatih. Setelah <b>disetujui</b>, prestasi masuk ke rekap resmi dan tidak bisa diubah lagi olehmu. Selama masih <b>Menunggu</b> atau <b>Ditolak</b>, kamu boleh memperbaikinya.</p>
+      <input type="hidden" id="psId">
+      <div class="grid k2">
+        <div><label for="psNamaAtlet">Atlet</label><input type="text" id="psNamaAtlet" disabled></div>
+        <div><label for="psKejuaraan">Nama kejuaraan</label><input type="text" id="psKejuaraan" maxlength="150"></div>
+        <div><label for="psTingkat">Tingkat</label>
+          <select id="psTingkat"><option>Sekolah</option><option>Kota</option><option>Provinsi</option><option>Nasional</option><option>Internasional</option></select>
+        </div>
+        <div><label for="psTanggal">Tanggal</label><input type="date" id="psTanggal"></div>
+        <div><label for="psTempat">Tempat</label><input type="text" id="psTempat" maxlength="150"></div>
+        <div><label for="psPenyelenggara">Penyelenggara</label><input type="text" id="psPenyelenggara" maxlength="150"></div>
+        <div><label for="psKategori">Kategori</label>
+          <select id="psKategori"><option>Tanding</option><option>Seni Tunggal</option><option>Seni Ganda</option><option>Seni Regu</option></select>
+        </div>
+        <div><label for="psKelas">Kelas</label><input type="text" id="psKelas" maxlength="60"></div>
+        <div><label for="psMedali">Medali</label>
+          <select id="psMedali"><option>Emas</option><option>Perak</option><option>Perunggu</option><option>Partisipasi</option></select>
+        </div>
+        <div><label for="psBukti">Bukti / sertifikat (opsional)</label><input type="file" id="psBukti" accept="image/png,image/jpeg">
+          <p class="petunjuk" id="psBuktiInfo"></p></div>
+      </div>
+      <label for="psCatatan">Catatan</label>
+      <textarea id="psCatatan" rows="2" maxlength="500"></textarea>
+      <button class="tombol" id="btnSimpanUsulan" type="button">Kirim pengajuan</button>
+      <button class="tombol kedua" id="btnUsulanBaru" type="button">Formulir kosong</button>
+    </div>
+
+    <div class="kartu" id="kartuUsulanSaya" hidden>
+      <h3 style="margin-top:0">📋 Pengajuan prestasi saya</h3>
+      <div class="tabelwrap"><table id="tabelUsulanSaya"></table></div>
+    </div>
+  </section>
+
+  <!-- ============ PERKEMBANGAN ============ -->
+  <section class="halaman" id="hal-perkembangan">
+    <h2 class="judul">Perkembangan antar sesi tes</h2>
+    <div class="kartu">
+      <label for="pkAtlet">Atlet</label>
+      <select id="pkAtlet"></select>
+    </div>
+    <div id="isiPerkembangan"></div>
+  </section>
+
+  <!-- ============ LAPORAN ============ -->
+  <section class="halaman" id="hal-laporan">
+    <h2 class="judul">Laporan atlet</h2>
+    <div class="kartu" id="kartuPilihLaporan">
+      <div class="grid k2">
+        <div><label for="lpAtlet">Atlet</label><select id="lpAtlet"></select></div>
+        <div><label for="lpTes">Sesi tes</label><select id="lpTes"></select></div>
+      </div>
+      <button class="tombol" id="btnCetakLaporan">🖨️ Cetak / Simpan PDF</button>
+      <p class="petunjuk">Laporan ini bisa dicetak langsung atau disimpan sebagai PDF lewat kotak dialog cetak browser.</p>
+    </div>
+    <div id="isiLaporan"><p class="kosong">Pilih atlet untuk melihat laporan.</p></div>
+  </section>
+
+  <!-- ============ KEUANGAN ============ -->
+  <section class="halaman" id="hal-keuangan">
+    <div class="subtab" id="subtabKeuangan">
+      <button data-sub="ringkasan" class="aktif">📊 Ringkasan</button>
+      <button data-sub="kas">📒 Kas</button>
+      <button data-sub="iuran">🧾 Iuran</button>
+      <button data-sub="laporan">📄 Laporan</button>
+      <button data-sub="kasumum" id="btnSubKasUmum" style="display:none">📈 Kas Umum</button>
+    </div>
+
+    <div class="subpanel tampil" id="kw-ringkasan">
+      <h2 class="judul">Ringkasan iuran — <span id="kwPeriodeLabel"></span></h2>
+      <div class="kartu grid k4" id="kwStat"></div>
+      <div class="kartu" id="kwRincian"></div>
+
+      <h2 class="judul">Daftar tunggakan</h2>
+      <div class="kartu">
+        <label class="centang"><input type="checkbox" id="kwSertakan"> Sertakan tagihan bulan berjalan</label>
+        <p class="petunjuk" id="kwTunggakanInfo"></p>
+        <div class="tabelwrap"><table id="kwTabelTunggakan"></table></div>
+      </div>
+
+      <h2 class="judul">Tagihan dan penerimaan 6 bulan terakhir</h2>
+      <div class="kartu">
+        <div class="tabelwrap"><table id="kwTabelArus"></table></div>
+        <p class="petunjuk">"Diterima" dihitung menurut tanggal uang masuk, sedangkan "tagihan" menurut bulan tagihannya.</p>
+      </div>
+    </div>
+
+    <div class="subpanel" id="kw-kas">
+      <h2 class="judul">Buku kas — penerimaan iuran</h2>
+      <div class="kartu">
+        <div class="grid k2">
+          <div><label for="kasBulan">Bulan penerimaan</label><input type="month" id="kasBulan"></div>
+          <div><label class="centang" style="margin-top:36px"><input type="checkbox" id="kasSemua"> Tampilkan semua bulan</label></div>
+        </div>
+      </div>
+      <div class="kartu grid k4" id="kasStat"></div>
+      <div class="kartu">
+        <div class="tabelwrap"><table id="kasTabel"></table></div>
+        <p class="petunjuk">Pembayaran yang salah tidak dihapus, melainkan dibatalkan dengan alasan dan tetap tercatat. Pembayaran yang dibatalkan tidak dihitung dalam total.</p>
+      </div>
+    </div>
+
+    <div class="subpanel" id="kw-iuran">
+      <h2 class="judul">Tagihan iuran bulanan</h2>
+      <div class="kartu">
+        <div class="grid k2">
+          <div><label for="iuBulan">Bulan tagihan</label><input type="month" id="iuBulan"></div>
+          <div><label for="iuStatus">Tampilkan</label>
+            <select id="iuStatus">
+              <option value="">Semua</option>
+              <option value="BELUM_LUNAS">Belum lunas</option>
+              <option value="Belum">Belum bayar</option>
+              <option value="Sebagian">Sebagian</option>
+              <option value="Lunas">Lunas</option>
+            </select></div>
+        </div>
+        <label for="iuCari">Cari nama atlet</label>
+        <input type="text" id="iuCari" placeholder="ketik nama…">
+        <button class="tombol kedua" id="btnBuatTagihan">Buat tagihan bulan terpilih</button>
+        <button class="tombol" id="btnBiayaLain">➕ Tagihan biaya lain</button>
+        <p class="petunjuk" id="iuInfo">Tagihan bulan berjalan dibuat otomatis untuk semua atlet aktif.</p>
+      </div>
+      <div class="kartu grid k4" id="iuStat"></div>
+      <div class="kartu"><div class="tabelwrap"><table id="iuTabel"></table></div></div>
+    </div>
+
+    <div class="subpanel" id="kw-laporan">
+      <h2 class="judul">Rekap keuangan per atlet</h2>
+      <div class="kartu" id="kartuPilihRekap">
+        <div class="grid k2">
+          <div><label for="kwLpAtlet">Atlet</label><select id="kwLpAtlet"></select></div>
+          <div><label for="kwLpTahun">Tahun</label><select id="kwLpTahun"></select></div>
+        </div>
+        <button class="tombol" id="btnCetakRekap">🖨️ Cetak / Simpan PDF</button>
+      </div>
+      <div id="kwIsiLaporan"><p class="kosong">Pilih atlet untuk melihat rekap.</p></div>
+    </div>
+
+    <!-- ===== Kas Umum: uang masuk & keluar (khusus Admin) ===== -->
+    <div class="subpanel" id="kw-kasumum">
+      <h2 class="judul">Buku kas — uang masuk dan keluar</h2>
+      <div class="kartu">
+        <div class="grid k2">
+          <div><label for="kuBulan">Bulan</label><input type="month" id="kuBulan"></div>
+          <div><label class="centang" style="margin-top:36px"><input type="checkbox" id="kuSemua"> Tampilkan semua bulan</label></div>
+        </div>
+        <button class="tombol" id="btnKuMasuk" type="button">➕ Pemasukan</button>
+        <button class="tombol bahaya" id="btnKuKeluar" type="button">➖ Pengeluaran</button>
+        <button class="tombol kedua" id="btnKuKonfig" type="button">⚙️ Kategori &amp; saldo awal</button>
+        <p class="petunjuk">Pembayaran iuran dan biaya atlet otomatis tampil sebagai pemasukan (sumber "Iuran"). Admin dapat mengedit dan menghapus semua baris; setiap perubahan tercatat di riwayat di bawah.</p>
+      </div>
+      <div class="kartu grid k4" id="kuStat"></div>
+      <div class="kartu">
+        <div class="tabelwrap"><table id="kuTabel"></table></div>
+        <p class="petunjuk" id="kuKategori"></p>
+      </div>
+      <details class="kartu" id="kuLogWrap">
+        <summary style="cursor:pointer;font-weight:600">🧾 Riwayat perubahan keuangan (audit)</summary>
+        <div class="tabelwrap" style="margin-top:10px"><table id="kuLog"></table></div>
+      </details>
+    </div>
+  </section>
+
+  <!-- ============ PENGATURAN ============ -->
+  <section class="halaman" id="hal-pengaturan">
+
+    <h2 class="judul">Identitas &amp; tampilan</h2>
+    <div class="kartu">
+      <div class="unggah">
+        <img class="pratinjau logo-pratinjau" id="stLogoPratinjau" alt="Pratinjau logo">
+        <div class="kendali">
+          <label for="stLogo">Logo aplikasi</label>
+          <input type="file" id="stLogo" accept="image/png,image/jpeg">
+          <p class="petunjuk">Unggah berkas JPG atau PNG, maksimal 5 MB. Logo disimpan di folder Drive akademi dan langsung dipakai di kepala halaman serta layar masuk.</p>
+          <button class="tombol kedua tombol-kecil" id="btnBatalLogo" type="button">Batalkan pilihan</button>
+          <button class="tombol kedua tombol-kecil" id="btnHapusLogo" type="button">Hapus logo</button>
+        </div>
+      </div>
+
+      <div class="grid k2">
+        <div><label for="stNama">Nama aplikasi</label><input type="text" id="stNama"></div>
+        <div><label for="stSub">Subjudul</label><input type="text" id="stSub"></div>
+        <div><label for="stOrg">Nama organisasi</label><input type="text" id="stOrg"></div>
+        <div><label for="stFooter">Footer</label><input type="text" id="stFooter"></div>
+      </div>
+
+      <div class="grid k4">
+        <div><label for="stUtama">Warna utama</label><input type="color" id="stUtama"></div>
+        <div><label for="stSekunder">Warna sekunder</label><input type="color" id="stSekunder"></div>
+        <div><label for="stAksen">Warna aksen</label><input type="color" id="stAksen"></div>
+        <div><label for="stBg">Warna latar</label><input type="color" id="stBg"></div>
+        <div><label for="stUsiaMin">Usia minimum atlet</label><input type="number" id="stUsiaMin" min="3" max="80"></div>
+        <div><label for="stUsiaMaks">Usia maksimum atlet</label><input type="number" id="stUsiaMaks" min="3" max="80"></div>
+      </div>
+
+      <button class="tombol" id="btnSimpanPengaturan">Simpan identitas</button>
+    </div>
+
+    <h2 class="judul">Hak akses siswa</h2>
+    <div class="kartu">
+      <p class="petunjuk">Centang bagian yang boleh dibuka akun berperan Siswa. Apa pun pilihannya, akun siswa tidak pernah bisa menambah, mengubah, atau menghapus data — hanya melihat. Pembatasan ini juga diperiksa di sisi server, bukan sekadar disembunyikan dari tampilan.</p>
+      <div class="daftar-centang" id="daftarAksesSiswa"></div>
+      <p class="petunjuk">Akun siswa yang ditautkan ke seorang atlet hanya melihat data atlet itu; yang tidak ditautkan dapat melihat seluruh atlet pada bagian yang dicentang di atas.</p>
+      <button class="tombol" id="btnSimpanAkses">Simpan hak akses</button>
+    </div>
+
+    <h2 class="judul">Pengaturan cetak laporan</h2>
+    <div class="kartu">
+      <p class="petunjuk">Atur bagian apa saja yang ikut tercetak pada halaman Laporan, bentuk tampilannya, serta posisi dan ukuran kertas. Pengaturan ini hanya berlaku saat laporan dicetak atau disimpan sebagai PDF — tampilan Dashboard tetap menampilkan semua bagian secara lengkap.</p>
+
+      <label>Bagian yang dicetak</label>
+      <div class="daftar-centang" id="daftarCetakBagian"></div>
+
+      <div class="grid k4" style="margin-top:6px">
+        <div><label for="stCetakBentukProfil">Bentuk profil kebugaran</label>
+          <select id="stCetakBentukProfil">
+            <option value="radar">Diagram radar</option>
+            <option value="bar">Bar per komponen</option>
+            <option value="keduanya">Diagram radar &amp; bar</option>
+          </select>
+        </div>
+        <div><label for="stCetakBentukDetail">Bentuk detail item tes</label>
+          <select id="stCetakBentukDetail">
+            <option value="diagram">Diagram batang saja</option>
+            <option value="tabel">Tabel saja</option>
+            <option value="keduanya">Diagram &amp; tabel</option>
+          </select>
+        </div>
+        <div><label for="stCetakOrientasi">Posisi kertas</label>
+          <select id="stCetakOrientasi">
+            <option value="potret">Potret (berdiri)</option>
+            <option value="lanskap">Lanskap (mendatar)</option>
+          </select>
+        </div>
+        <div><label for="stCetakUkuran">Ukuran kertas</label>
+          <select id="stCetakUkuran">
+            <option value="A4">A4</option>
+            <option value="Letter">Letter</option>
+            <option value="F4">F4 / Folio</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="grid k2" style="margin-top:4px">
+        <label class="centang" style="margin-top:14px">
+          <input type="checkbox" id="stCetakPisahProfil"> Mulai halaman baru sebelum bagian profil kebugaran</label>
+        <label class="centang" style="margin-top:14px">
+          <input type="checkbox" id="stCetakPisahPrestasi"> Mulai halaman baru sebelum bagian prestasi</label>
+      </div>
+
+      <button class="tombol" id="btnSimpanCetak">Simpan pengaturan cetak</button>
+    </div>
+
+    <h2 class="judul">Biodata oleh siswa</h2>
+    <div class="kartu">
+      <label class="centang"><input type="checkbox" id="stSiswaEdit"> Siswa boleh memperbaiki biodatanya sendiri</label>
+      <p class="petunjuk">Yang bisa diubah siswa: nama, tempat lahir, asal daerah, dan foto. Tanggal lahir, gender, tingkatan, status, dan catatan hanya bisa diubah pelatih atau admin karena memengaruhi skor. Setiap perubahan oleh siswa tercatat di sheet LOG_ATLET. Akun siswa harus sudah ditautkan ke atlet di bagian Pengguna.</p>
+      <button class="tombol" id="btnSimpanSiswaEdit" type="button">Simpan</button>
+    </div>
+
+    <h2 class="judul">Keuangan — iuran atlet</h2>
+    <div class="kartu">
+      <div class="grid k2">
+        <div><label for="kwStDefault">Iuran default per bulan (Rp)</label>
+          <input type="number" id="kwStDefault" min="0" step="1000"></div>
+        <div><label for="kwStMulai">Pembukuan dimulai bulan</label>
+          <input type="month" id="kwStMulai"></div>
+      </div>
+      <p class="petunjuk">Tagihan dibuat otomatis tiap bulan untuk semua atlet aktif, mulai bulan pembukuan sampai bulan berjalan. Nominal diambil dari tarif khusus atlet, lalu tarif tingkatan, lalu iuran default. Nominal 0 berarti bebas iuran (tidak ditagih).</p>
+      <button class="tombol" id="btnSimpanKeu">Simpan pengaturan iuran</button>
+    </div>
+
+    <h2 class="judul">Tarif iuran khusus</h2>
+    <div class="kartu">
+      <p class="petunjuk">Atur nominal berbeda per tingkatan atau per atlet (mis. beasiswa atau keringanan). Tarif atlet mengalahkan tarif tingkatan. Perubahan hanya berlaku untuk tagihan yang dibuat sesudahnya; nominal tagihan lama bisa diubah satuan lewat menu Keuangan › Iuran.</p>
+      <div class="tabelwrap"><table id="tabelTarif"></table></div>
+      <datalist id="dlTingkatan"></datalist>
+      <button class="tombol kedua" id="btnTambahTarif">Tambah tarif</button>
+      <button class="tombol" id="btnSimpanTarif">Simpan tarif</button>
+    </div>
+
+    <h2 class="judul">Komponen penilaian</h2>
+    <div class="kartu">
+      <p class="petunjuk">Nama komponen boleh diganti kapan saja — item tes dan data lama tetap menempel karena ditautkan lewat ID, bukan nama. Total bobot komponen aktif harus 100%.</p>
+      <div class="tabelwrap"><table id="tabelKomponen"></table></div>
+      <p class="petunjuk">Total bobot aktif saat ini: <b id="totalBobot">0%</b></p>
+      <button class="tombol kedua" id="btnTambahKomponen">Tambah komponen</button>
+      <button class="tombol" id="btnSimpanKomponen">Simpan komponen</button>
+    </div>
+
+    <h2 class="judul">Item tes</h2>
+    <div class="kartu">
+      <p class="petunjuk">Tambah, ganti nama, pindahkan komponen, atau nonaktifkan item tes. Menghapus item juga menghapus benchmark-nya; hasil tes lama tetap tersimpan di spreadsheet.</p>
+      <div class="tabelwrap"><table id="tabelItem"></table></div>
+      <button class="tombol kedua" id="btnTambahItem">Tambah item tes</button>
+      <button class="tombol" id="btnSimpanItem">Simpan item tes</button>
+    </div>
+
+    <h2 class="judul">Kategori skor</h2>
+    <div class="kartu">
+      <div class="tabelwrap"><table id="tabelKategori"></table></div>
+      <button class="tombol kedua" id="btnTambahKategori">Tambah baris</button>
+      <button class="tombol" id="btnSimpanKategori">Simpan kategori</button>
+    </div>
+
+    <h2 class="judul">Benchmark</h2>
+    <div class="kartu">
+      <div class="grid k4">
+        <div><label for="bmItem">Item tes</label><select id="bmItem"></select></div>
+        <div><label for="bmGender">Gender</label>
+          <select id="bmGender"><option>Laki-laki</option><option>Perempuan</option><option>Semua</option></select>
+        </div>
+        <div><label for="bmMin">Usia minimum</label><input type="number" id="bmMin" value="13"></div>
+        <div><label for="bmMaks">Usia maksimum</label><input type="number" id="bmMaks" value="15"></div>
+        <div><label for="bmNilai">Nilai benchmark</label><input type="number" step="0.01" id="bmNilai"></div>
+        <div><label for="bmAktif">Status</label>
+          <select id="bmAktif"><option>YA</option><option>TIDAK</option></select>
+        </div>
+      </div>
+      <p class="petunjuk">Arah penilaian (makin besar atau makin kecil makin baik) kini melekat pada item tes, bukan pada tiap baris benchmark.</p>
+      <input type="hidden" id="bmId">
+      <button class="tombol" id="btnSimpanBM">Simpan benchmark</button>
+      <button class="tombol kedua" id="btnBMBaru">Formulir kosong</button>
+      <div class="tabelwrap" style="margin-top:14px"><table id="tabelBM"></table></div>
+    </div>
+
+    <h2 class="judul">Pengguna &amp; kata sandi</h2>
+    <div class="kartu">
+      <div class="grid k2">
+        <div><label for="usNama">Nama lengkap</label><input type="text" id="usNama"></div>
+        <div><label for="usUser">Nama pengguna</label><input type="text" id="usUser" autocapitalize="none" spellcheck="false" placeholder="huruf kecil, tanpa spasi"></div>
+        <div><label for="usPeran">Peran</label>
+          <select id="usPeran"><option>Admin</option><option>Pelatih</option><option>Siswa</option></select>
+        </div>
+        <div><label for="usAtlet">Tautkan ke atlet (khusus Siswa)</label><select id="usAtlet"></select></div>
+        <div><label for="usSandi">Kata sandi</label><input type="password" id="usSandi" autocomplete="new-password" placeholder="minimal 6 karakter">
+          <label class="centang"><input type="checkbox" class="lihat-sandi" data-target="usSandi"> Tampilkan kata sandi</label></div>
+        <div><label for="usAktif">Status</label>
+          <select id="usAktif"><option>YA</option><option>TIDAK</option></select>
+        </div>
+      </div>
+      <input type="hidden" id="usLama">
+      <p class="petunjuk">Saat mengubah pengguna, kosongkan kolom kata sandi bila sandinya tidak ingin diganti. Akun Siswa yang ditautkan ke seorang atlet hanya bisa melihat data atlet itu saja.</p>
+      <button class="tombol" id="btnSimpanPengguna">Simpan pengguna</button>
+      <button class="tombol kedua" id="btnPenggunaBaru">Formulir kosong</button>
+      <div class="tabelwrap" style="margin-top:14px"><table id="tabelPengguna"></table></div>
+    </div>
+  </section>
+
+  <p id="footerApp" class="petunjuk" style="text-align:center;margin-top:26px"></p>
+</div>
+
+<!-- ============ DIALOG GANTI KATA SANDI ============ -->
+<div id="tirai" class="tirai" hidden>
+  <div class="dialog">
+    <h3 style="margin-top:0">Ganti kata sandi</h3>
+    <label for="gsLama">Kata sandi lama</label>
+    <input type="password" id="gsLama" autocomplete="current-password">
+    <label for="gsBaru">Kata sandi baru</label>
+    <input type="password" id="gsBaru" autocomplete="new-password">
+    <label for="gsUlang">Ulangi kata sandi baru</label>
+    <input type="password" id="gsUlang" autocomplete="new-password">
+    <label class="centang"><input type="checkbox" class="lihat-sandi" data-target="gsLama,gsBaru,gsUlang"> Tampilkan kata sandi</label>
+    <button class="tombol" id="btnKirimSandi" type="button">Simpan</button>
+    <button class="tombol kedua" id="btnTutupSandi" type="button">Batal</button>
+  </div>
+</div>
+
+<!-- ============ DIALOG KEUANGAN ============ -->
+<div id="tiraiBayar" class="tirai" hidden>
+  <div class="dialog">
+    <h3>Catat pembayaran</h3>
+    <p class="petunjuk" id="byInfo"></p>
+    <label for="byTanggal">Tanggal bayar</label>
+    <input type="date" id="byTanggal">
+    <label for="byJumlah">Jumlah (Rp)</label>
+    <input type="number" id="byJumlah" min="1" step="1">
+    <label for="byMetode">Metode</label>
+    <select id="byMetode"></select>
+    <label for="byCatatan">Catatan (opsional)</label>
+    <input type="text" id="byCatatan">
+    <button class="tombol" id="btnKirimBayar" type="button">Simpan</button>
+    <button class="tombol kedua" id="btnTutupBayar" type="button">Batal</button>
+  </div>
+</div>
+
+<div id="tiraiTagihan" class="tirai" hidden>
+  <div class="dialog">
+    <h3>Ubah tagihan</h3>
+    <p class="petunjuk" id="tgInfo"></p>
+    <div id="tgNamaWrap"><label for="tgNama">Nama biaya</label><input type="text" id="tgNama" maxlength="60"></div>
+    <label for="tgNominal">Nominal tagihan (Rp)</label>
+    <input type="number" id="tgNominal" min="0" step="1">
+    <label for="tgCatatan">Catatan (mis. potongan, keringanan)</label>
+    <input type="text" id="tgCatatan">
+    <button class="tombol" id="btnKirimTagihan" type="button">Simpan</button>
+    <button class="tombol kedua" id="btnTutupTagihan" type="button">Batal</button>
+  </div>
+</div>
+
+<div id="tiraiBatal" class="tirai" hidden>
+  <div class="dialog">
+    <h3>Batalkan pembayaran</h3>
+    <p class="petunjuk" id="btInfo"></p>
+    <label for="btAlasan">Alasan pembatalan (wajib)</label>
+    <textarea id="btAlasan" rows="3"></textarea>
+    <button class="tombol bahaya" id="btnKirimBatal" type="button">Batalkan pembayaran</button>
+    <button class="tombol kedua" id="btnTutupBatal" type="button">Kembali</button>
+  </div>
+</div>
+
+<div id="tiraiBiaya" class="tirai" hidden>
+  <div class="dialog" style="max-width:460px;max-height:92vh;overflow-y:auto">
+    <h3>Tagihan biaya lain</h3>
+    <p class="petunjuk">Tulis sendiri nama dan nominalnya, misalnya seragam, pendaftaran, atau biaya kejuaraan. Nominal ini berlaku sama untuk setiap atlet yang dipilih dan masih bisa diubah per atlet lewat tombol "Ubah".</p>
+    <label for="bfNama">Nama biaya</label>
+    <input type="text" id="bfNama" list="dlBiaya" maxlength="60" placeholder="mis. Seragam latihan">
+    <datalist id="dlBiaya"><option value="Seragam"><option value="Pendaftaran"><option value="Biaya kejuaraan"><option value="Peralatan"><option value="Pemeriksaan kesehatan"></datalist>
+    <label for="bfNominal">Nominal per atlet (Rp)</label>
+    <input type="number" id="bfNominal" min="1" step="1">
+    <label for="bfBulan">Bulan tagihan</label>
+    <input type="month" id="bfBulan">
+    <label>Dikenakan kepada</label>
+    <label class="centang"><input type="radio" name="bfSasaran" value="semua" checked> Semua atlet aktif</label>
+    <label class="centang"><input type="radio" name="bfSasaran" value="pilih"> Pilih atlet tertentu</label>
+    <div id="bfDaftarWrap" hidden style="max-height:190px;overflow-y:auto;border:1px solid var(--line);border-radius:10px;padding:4px 12px;margin-top:8px"><div id="bfDaftar"></div></div>
+    <label for="bfCatatan">Catatan (opsional)</label>
+    <input type="text" id="bfCatatan">
+    <button class="tombol" id="btnKirimBiaya" type="button">Buat tagihan</button>
+    <button class="tombol kedua" id="btnTutupBiaya" type="button">Batal</button>
+  </div>
+</div>
+
+<!-- ============ DIALOG HAPUS PERMANEN ATLET (Revisi 3) ============ -->
+<div id="tiraiHapusAtlet" class="tirai" hidden>
+  <div class="dialog">
+    <h3>⚠️ Hapus permanen atlet</h3>
+    <p class="petunjuk" id="hpInfo"></p>
+    <label for="hpKetik">Ketik nama atlet persis seperti di atas untuk melanjutkan</label>
+    <input type="text" id="hpKetik" autocomplete="off">
+    <button class="tombol bahaya" id="btnHapusPermanenKirim" type="button" disabled>Hapus permanen</button>
+    <button class="tombol kedua" id="btnHapusPermanenBatal" type="button">Batal</button>
+  </div>
+</div>
+
+<!-- ============ DIALOG TOLAK PENGAJUAN PRESTASI ============ -->
+<div id="tiraiTolakUsulan" class="tirai" hidden>
+  <div class="dialog">
+    <h3>Tolak pengajuan prestasi</h3>
+    <p class="petunjuk" id="tlInfo"></p>
+    <label for="tlAlasan">Alasan (wajib, akan dibaca siswa)</label>
+    <textarea id="tlAlasan" rows="3" maxlength="300"></textarea>
+    <button class="tombol bahaya" id="btnTolakKirim" type="button">Tolak pengajuan</button>
+    <button class="tombol kedua" id="btnTolakBatal" type="button">Kembali</button>
+  </div>
+</div>
+
+<!-- ============ DIALOG KAS UMUM & EDIT PENUH ADMIN ============ -->
+<div id="tiraiKas" class="tirai" hidden>
+  <div class="dialog" style="max-height:92vh;overflow-y:auto">
+    <h3 id="kfJudul">Transaksi kas</h3>
+    <input type="hidden" id="kfId"><input type="hidden" id="kfJenis">
+    <label for="kfTanggal">Tanggal</label>
+    <input type="date" id="kfTanggal">
+    <label for="kfKategori">Kategori</label>
+    <select id="kfKategori"></select>
+    <label for="kfJumlah">Jumlah (Rp)</label>
+    <input type="number" id="kfJumlah" min="1" step="1">
+    <label for="kfMetode">Metode</label>
+    <select id="kfMetode"></select>
+    <label for="kfKet">Keterangan</label>
+    <input type="text" id="kfKet" maxlength="300" placeholder="mis. sewa lapangan bulan Oktober">
+    <label for="kfNota">Foto nota (opsional)</label>
+    <input type="file" id="kfNota" accept="image/png,image/jpeg">
+    <p class="petunjuk" id="kfNotaInfo"></p>
+    <button class="tombol" id="btnKfSimpan" type="button">Simpan</button>
+    <button class="tombol kedua" id="btnKfBatal" type="button">Batal</button>
+  </div>
+</div>
+
+<div id="tiraiEditBayar" class="tirai" hidden>
+  <div class="dialog">
+    <h3>Edit pembayaran</h3>
+    <p class="petunjuk" id="ebInfo"></p>
+    <label for="ebTanggal">Tanggal bayar</label>
+    <input type="date" id="ebTanggal">
+    <label for="ebJumlah">Jumlah (Rp)</label>
+    <input type="number" id="ebJumlah" min="1" step="1">
+    <label for="ebMetode">Metode</label>
+    <select id="ebMetode"></select>
+    <label for="ebCatatan">Catatan</label>
+    <input type="text" id="ebCatatan" maxlength="300">
+    <button class="tombol" id="btnEbSimpan" type="button">Simpan</button>
+    <button class="tombol kedua" id="btnEbBatal" type="button">Batal</button>
+  </div>
+</div>
+
+<div id="tiraiTagihanAdmin" class="tirai" hidden>
+  <div class="dialog">
+    <h3>Edit penuh tagihan</h3>
+    <p class="petunjuk" id="taInfo"></p>
+    <div id="taNamaWrap"><label for="taNama">Nama biaya</label><input type="text" id="taNama" maxlength="60"></div>
+    <div id="taPeriodeWrap"><label for="taPeriode">Bulan tagihan</label><input type="month" id="taPeriode"></div>
+    <label for="taNominal">Nominal (Rp)</label>
+    <input type="number" id="taNominal" min="0" step="1">
+    <label for="taCatatan">Catatan</label>
+    <input type="text" id="taCatatan" maxlength="300">
+    <p class="petunjuk" id="taPeringatan"></p>
+    <button class="tombol" id="btnTaSimpan" type="button">Simpan</button>
+    <button class="tombol bahaya" id="btnTaHapus" type="button">Hapus tagihan</button>
+    <button class="tombol kedua" id="btnTaBatal" type="button">Batal</button>
+  </div>
+</div>
+
+<div id="tiraiHapusKeu" class="tirai" hidden>
+  <div class="dialog">
+    <h3>⚠️ Hapus permanen</h3>
+    <p class="petunjuk" id="hkInfo"></p>
+    <label for="hkAlasan">Alasan (wajib, tercatat di riwayat)</label>
+    <textarea id="hkAlasan" rows="3" maxlength="300"></textarea>
+    <button class="tombol bahaya" id="btnHkKirim" type="button">Hapus permanen</button>
+    <button class="tombol kedua" id="btnHkBatal" type="button">Batal</button>
+  </div>
+</div>
+
+<div id="tiraiKonfigKas" class="tirai" hidden>
+  <div class="dialog" style="max-width:460px;max-height:92vh;overflow-y:auto">
+    <h3>Kategori dan saldo awal</h3>
+    <label for="kcMasuk">Kategori pemasukan (satu per baris)</label>
+    <textarea id="kcMasuk" rows="4"></textarea>
+    <label for="kcKeluar">Kategori pengeluaran (satu per baris)</label>
+    <textarea id="kcKeluar" rows="6"></textarea>
+    <label for="kcSaldo">Saldo awal kas (Rp)</label>
+    <input type="number" id="kcSaldo" min="0" step="1">
+    <p class="petunjuk">Saldo awal dihitung sebelum semua transaksi yang tercatat. Isi 0 bila mulai dari nol. Kategori yang dihapus dari daftar tidak mengubah transaksi lama.</p>
+    <button class="tombol" id="btnKcSimpan" type="button">Simpan</button>
+    <button class="tombol kedua" id="btnKcBatal" type="button">Batal</button>
+  </div>
+</div>
+
+<div id="pesan"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<?!= include('script'); ?>
+</body>
+</html>
